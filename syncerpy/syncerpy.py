@@ -4,7 +4,7 @@ import pandas as pd
 from pathlib import Path
 from scipy import signal
 import time
-from .plotting import plot_results
+from .plotting import plot_results, plot_spectrograms
 
 # Configuration Constants
 EPSILON = 1e-12
@@ -184,24 +184,65 @@ def run_fine_stage(sRef, sShift, fs, current_offset):
     print(f"  [Fine search] offset: {final_offset:.5f} s")
     return final_offset
 
-def syncerpy(file_reference, file_shift, channel_reference=None, channel_shift=None, plot=False, fs=64):
+def syncerpy(file_reference, file_shift, channel_reference=None, channel_shift=None,
+             plot=False, show_plot=True, save_plot=False, save_correlation_plot=False,
+             output_folder=None, fs=64, prefix=None):
     t0 = time.time()
     
     file_reference = Path(file_reference)
     file_shift = Path(file_shift)
     
+    if output_folder:
+        out_dir = Path(output_folder)
+    else:
+        out_dir = file_reference.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     # 1. Load
     sRef = load_file(file_reference, fs, channel_reference)
     sShift = load_file(file_shift, fs, channel_shift)
     
+    # Plot 1: Pre-alignment Spectrograms (Raw files) - DISABLED in favor of combined plot in cutterpy
+    # if save_plot or (plot and show_plot):
+    #     # If we are saving, or if we are showing (which implies generating)
+    #     # Note: The user asked for "save_plot" to control saving. "show_plot" controls showing.
+    #
+    #     # We only save if save_plot is True.
+    #     save_path = None
+    #     if save_plot:
+    #         save_path = out_dir / f"spectrograms_raw_{file_reference.stem}_vs_{file_shift.stem}.png"
+    #
+    #     # We only generate/show if save_plot is True OR show_plot is True
+    #     if save_plot or show_plot:
+    #         plot_spectrograms(sRef, sShift, fs,
+    #                           name_a=f"{file_reference.name} (raw)",
+    #                           name_b=f"{file_shift.name} (raw)",
+    #                           title="Raw Spectrograms (Pre-alignment)",
+    #                           plot_win_sec=PLOT_WIN_SEC,
+    #                           plot_overlap_divisor=PLOT_OVERLAP_DIVISOR,
+    #                           plot_max_freq=PLOT_MAX_FREQ,
+    #                           save_path=str(save_path) if save_path else None,
+    #                           show_plot=show_plot)
+
     offset, coarse_corr, coarse_lags = run_coarse_stage(sRef, sShift, fs)
     offset = run_fine_stage(sRef, sShift, fs, offset)
     
     print(f"\n{'='*30}\nOFFSET: {offset*1000:.2f} ms\n{'='*30}")
     print(f"Total execution time: {time.time() - t0:.3f} s")
     
-    if plot:
-        plot_results(sRef, sShift, fs, offset, file_reference.name, file_shift.name, coarse_corr, coarse_lags,
-                     PLOT_WIN_SEC, PLOT_OVERLAP_DIVISOR, PLOT_MAX_FREQ)
+    # Plot 3: Correlation Plot (Existing)
+    if save_correlation_plot or (plot and show_plot):
+        save_path = None
+        if save_correlation_plot:
+            fname = f"correlation_{file_reference.stem}_vs_{file_shift.stem}.png"
+            if prefix:
+                fname = f"{prefix}-{fname}"
+            save_path = out_dir / fname
+            
+        if save_correlation_plot or show_plot:
+            plot_results(sRef, sShift, fs, offset, file_reference.name, file_shift.name, coarse_corr, coarse_lags,
+                         PLOT_WIN_SEC, PLOT_OVERLAP_DIVISOR, PLOT_MAX_FREQ,
+                         save_path=str(save_path) if save_path else None,
+                         show_plot=show_plot)
         
     return offset

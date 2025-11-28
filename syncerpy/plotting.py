@@ -4,7 +4,7 @@ from scipy import signal
 from lspopt import spectrogram_lspopt
 
 def plot_results(sA, sB, fs, offset_sec, name_a, name_b, coarse_corr=None, coarse_lags=None,
-                 plot_win_sec=30, plot_overlap_divisor=4, plot_max_freq=30, save_path=None, fsB=None):
+                 plot_win_sec=30, plot_overlap_divisor=4, plot_max_freq=30, save_path=None, fsB=None, show_plot=False):
     
     if fsB is None:
         fsB = fs
@@ -119,5 +119,197 @@ def plot_results(sA, sB, fs, offset_sec, name_a, name_b, coarse_corr=None, coars
         plt.savefig(save_path)
         print(f"[Plotting] Saved plot to {save_path}")
         
-    plt.show()
+    if show_plot:
+        plt.show()
+    else:
+        plt.close(fig)
+        
+    return fig
+
+def plot_combined_spectrograms(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
+                               fs_ref_raw, fs_shift_raw, fs_ref_cut, fs_shift_cut,
+                               name_ref, name_shift, title="Combined Spectrograms",
+                               plot_win_sec=30, plot_overlap_divisor=4, plot_max_freq=30,
+                               save_path=None, show_plot=False):
+    
+    # Plot configuration
+    LABEL_FONT_SIZE = 12
+    TICK_FONT_SIZE = 10
+    ANNOTATION_FONT_SIZE = 12
+
+    def get_spec(sig, fs_local):
+        win = int(plot_win_sec * fs_local)
+        overlap = plot_win_sec / plot_overlap_divisor
+        f, t, S = spectrogram_lspopt(sig, fs_local, nperseg=win, noverlap=overlap)
+        return f[f<=plot_max_freq], t, 10*np.log10(S[f<=plot_max_freq])
+
+    # Calculate spectrograms
+    fR_raw, tR_raw, SR_raw = get_spec(sRef_raw, fs_ref_raw)
+    fS_raw, tS_raw, SS_raw = get_spec(sShift_raw, fs_shift_raw)
+    fR_cut, tR_cut, SR_cut = get_spec(sRef_cut, fs_ref_cut)
+    fS_cut, tS_cut, SS_cut = get_spec(sShift_cut, fs_shift_cut)
+
+    # Robust normalization
+    def get_robust_lims(S):
+        q25, q50, q75 = np.percentile(S, [25, 50, 75])
+        iqr = q75 - q25
+        vmin = q50 - 1.5 * iqr
+        vmax = q50 + 1.5 * iqr
+        return vmin, vmax
+
+    vmin_Rr, vmax_Rr = get_robust_lims(SR_raw)
+    vmin_Sr, vmax_Sr = get_robust_lims(SS_raw)
+    vmin_Rc, vmax_Rc = get_robust_lims(SR_cut)
+    vmin_Sc, vmax_Sc = get_robust_lims(SS_cut)
+
+    fig = plt.figure(figsize=(16, 16))
+    plt.suptitle(title, fontsize=16)
+
+    # Create outer grid for 2 groups (Raw vs Cut)
+    gs_outer = fig.add_gridspec(2, 1, hspace=0.3)
+    
+    # Group 1: Raw
+    gs_raw = gs_outer[0].subgridspec(2, 1, hspace=0.0)
+    ax1 = fig.add_subplot(gs_raw[0])
+    ax2 = fig.add_subplot(gs_raw[1])
+    
+    # Group 2: Cut
+    gs_cut = gs_outer[1].subgridspec(2, 1, hspace=0.0)
+    ax3 = fig.add_subplot(gs_cut[0])
+    ax4 = fig.add_subplot(gs_cut[1])
+
+    # --- Raw Plots ---
+    t_max_raw = max(tR_raw.max(), tS_raw.max())
+    
+    # Set background to red for "empty space"
+    ax1.set_facecolor('red')
+    ax2.set_facecolor('red')
+
+    # Plot 1 (Ref Raw)
+    ax1.pcolormesh(tR_raw/3600, fR_raw, SR_raw, shading="auto", cmap="Spectral_r", vmin=vmin_Rr, vmax=vmax_Rr)
+    ax1.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
+    ax1.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
+    ax1.tick_params(labelbottom=False) # Hide x-labels
+    ax1.set_xlim(0, t_max_raw/3600)
+    # Annotation
+    ax1.text(1.02, 0.5, f"{name_ref} (Raw)", transform=ax1.transAxes, rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
+
+    # Plot 2 (Shift Raw)
+    ax2.pcolormesh(tS_raw/3600, fS_raw, SS_raw, shading="auto", cmap="Spectral_r", vmin=vmin_Sr, vmax=vmax_Sr)
+    ax2.invert_yaxis() # Mirror
+    ax2.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
+    ax2.set_xlabel("Hours", fontsize=LABEL_FONT_SIZE)
+    ax2.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
+    ax2.set_xlim(0, t_max_raw/3600)
+    # Annotation
+    ax2.text(1.02, 0.5, f"{name_shift} (Raw)", transform=ax2.transAxes, rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
+
+    # --- Cut Plots ---
+    t_max_cut = max(tR_cut.max(), tS_cut.max())
+
+    # Plot 3 (Ref Cut)
+    ax3.pcolormesh(tR_cut/3600, fR_cut, SR_cut, shading="auto", cmap="Spectral_r", vmin=vmin_Rc, vmax=vmax_Rc)
+    ax3.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
+    ax3.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
+    ax3.tick_params(labelbottom=False) # Hide x-labels
+    ax3.set_xlim(0, t_max_cut/3600)
+    # Annotation
+    ax3.text(1.02, 0.5, f"{name_ref} (Aligned)", transform=ax3.transAxes, rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
+
+    # Plot 4 (Shift Cut)
+    ax4.pcolormesh(tS_cut/3600, fS_cut, SS_cut, shading="auto", cmap="Spectral_r", vmin=vmin_Sc, vmax=vmax_Sc)
+    ax4.invert_yaxis() # Mirror
+    ax4.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
+    ax4.set_xlabel("Hours", fontsize=LABEL_FONT_SIZE)
+    ax4.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
+    ax4.set_xlim(0, t_max_cut/3600)
+    # Annotation
+    ax4.text(1.02, 0.5, f"{name_shift} (Aligned)", transform=ax4.transAxes, rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
+
+    plt.subplots_adjust(right=0.9)
+
+    if save_path:
+        plt.savefig(save_path)
+        print(f"[Plotting] Saved combined spectrogram plot to {save_path}")
+        
+    if show_plot:
+        plt.show()
+    else:
+        plt.close(fig)
+        
+    return fig
+
+def plot_spectrograms(sA, sB, fs, name_a, name_b, title="Spectrograms",
+                      plot_win_sec=30, plot_overlap_divisor=4, plot_max_freq=30,
+                      save_path=None, fsB=None, show_plot=False):
+    
+    if fsB is None:
+        fsB = fs
+
+    # Plot configuration
+    LABEL_FONT_SIZE = 14
+    TICK_FONT_SIZE = 14
+    ANNOTATION_FONT_SIZE = 16
+
+    def get_spec(sig, fs_local):
+        win = int(plot_win_sec * fs_local)
+        overlap = plot_win_sec / plot_overlap_divisor
+        f, t, S = spectrogram_lspopt(sig, fs_local, nperseg=win, noverlap=overlap)
+        return f[f<=plot_max_freq], t, 10*np.log10(S[f<=plot_max_freq])
+
+    fA, tA, SA = get_spec(sA, fs)
+    fB, tB, SB = get_spec(sB, fsB)
+    
+    # Robust normalization
+    def get_robust_lims(S):
+        q25, q50, q75 = np.percentile(S, [25, 50, 75])
+        iqr = q75 - q25
+        vmin = q50 - 1.5 * iqr
+        vmax = q50 + 1.5 * iqr
+        return vmin, vmax
+
+    vmin_A, vmax_A = get_robust_lims(SA)
+    vmin_B, vmax_B = get_robust_lims(SB)
+
+    fig = plt.figure(figsize=(16, 8))
+    plt.suptitle(title, fontsize=16)
+
+    # Create a layout where the two plots touch
+    gs = fig.add_gridspec(2, 1, hspace=0.0)
+    
+    ax1 = fig.add_subplot(gs[0])
+    ax2 = fig.add_subplot(gs[1])
+
+    # Plot 1
+    ax1.pcolormesh(tA/3600, fA, SA, shading="auto", cmap="Spectral_r", vmin=vmin_A, vmax=vmax_A)
+    ax1.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
+    ax1.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
+    ax1.tick_params(labelbottom=False)
+    ax1.text(1.02, 0.5, name_a, transform=ax1.transAxes, rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
+
+    # Plot 2
+    ax2.pcolormesh(tB/3600, fB, SB, shading="auto", cmap="Spectral_r", vmin=vmin_B, vmax=vmax_B)
+    ax2.invert_yaxis() # Flip so 0Hz is at top (touching 0Hz of ax1)
+    ax2.text(1.02, 0.5, name_b, transform=ax2.transAxes, rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
+        
+    ax2.set_xlabel("Hours", fontsize=LABEL_FONT_SIZE)
+    ax2.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
+    ax2.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
+
+    # Sync x-axis
+    t_max = max(tA.max(), tB.max())
+    ax1.set_xlim(0, t_max/3600)
+    ax2.set_xlim(0, t_max/3600)
+
+    plt.subplots_adjust(right=0.9)
+    
+    if save_path:
+        plt.savefig(save_path)
+        print(f"[Plotting] Saved spectrogram plot to {save_path}")
+        
+    if show_plot:
+        plt.show()
+    else:
+        plt.close(fig)
+        
     return fig

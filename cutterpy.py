@@ -1,10 +1,11 @@
 import numpy as np
 from pathlib import Path
 import pyedflib
-from syncerpy.plotting import plot_results
+from syncerpy.plotting import plot_results, plot_spectrograms, plot_combined_spectrograms
 import datetime
+from syncerpy.syncerpy import load_file
 
-def cut(file_reference, file_shift, offset, output_folder=None, plot=False):
+def cut(file_reference, file_shift, offset, output_folder=None, plot=False, show_plot=True, save_plot=False, prefix=None):
     """
     Aligns two EDF files based on the provided offset using pyedflib to preserve exact headers.
     
@@ -110,8 +111,15 @@ def cut(file_reference, file_shift, offset, output_folder=None, plot=False):
         return data_list # Return for plotting
         
     # Output paths
-    out_name_ref = out_dir / f"{ref_path.stem}_synced.edf"
-    out_name_shift = out_dir / f"{shift_path.stem}_synced.edf"
+    fname_ref = f"{ref_path.stem}_synced.edf"
+    fname_shift = f"{shift_path.stem}_synced.edf"
+    
+    if prefix:
+        fname_ref = f"{prefix}-{fname_ref}"
+        fname_shift = f"{prefix}-{fname_shift}"
+        
+    out_name_ref = out_dir / fname_ref
+    out_name_shift = out_dir / fname_shift
     
     print(f"[Cutter] Saving to {out_name_ref}...")
     ref_data = process_file(f_ref, out_name_ref, start_ref_sec, common_dur, ref_signal_headers, ref_header)
@@ -123,32 +131,62 @@ def cut(file_reference, file_shift, offset, output_folder=None, plot=False):
     f_ref._close()
     f_shift._close()
     
-    if plot:
-        print("[Cutter] Generating plot...")
+    if save_plot or (plot and show_plot):
+        print("[Cutter] Generating combined plot...")
         # Use first channel for plotting
         # Normalize
         EPSILON = 1e-12
         
-        sig_ref = ref_data[0]
-        sig_shift = shift_data[0]
+        # Get cut signals
+        sig_ref_cut = ref_data[0]
+        sig_shift_cut = shift_data[0]
         
-        sig_ref = (sig_ref - np.mean(sig_ref)) / (np.std(sig_ref) + EPSILON)
-        sig_shift = (sig_shift - np.mean(sig_shift)) / (np.std(sig_shift) + EPSILON)
+        sig_ref_cut = (sig_ref_cut - np.mean(sig_ref_cut)) / (np.std(sig_ref_cut) + EPSILON)
+        sig_shift_cut = (sig_shift_cut - np.mean(sig_shift_cut)) / (np.std(sig_shift_cut) + EPSILON)
         
         fs_ref = ref_signal_headers[0].get('sample_frequency', ref_signal_headers[0].get('sample_rate'))
         fs_shift = shift_signal_headers[0].get('sample_frequency', shift_signal_headers[0].get('sample_rate'))
         
-        plot_path = out_dir / f"synced_plot_{ref_path.stem}_vs_{shift_path.stem}.png"
+        # Load raw signals for the top part of the plot
+        # We need to reload them or pass them in. Reloading is safer/easier here to avoid passing huge arrays around if not needed.
+        # We'll use the same channel index 0.
+        # Note: load_file does z-score normalization already.
         
-        plot_results(
-            sA=sig_ref,
-            sB=sig_shift,
-            fs=fs_ref,
-            offset_sec=0,
-            name_a=f"{ref_path.name} (synced)",
-            name_b=f"{shift_path.name} (synced)",
-            save_path=str(plot_path),
-            fsB=fs_shift
+        # We need to know the channel name for load_file if we want to be specific, but load_file takes a path.
+        # However, load_file in syncerpy.py uses mne which might be slow.
+        # Let's use pyedflib here since we have the reader logic, but readers are closed.
+        # Re-opening for just one channel is fine.
+        
+        def load_raw_channel_0(path):
+            with pyedflib.EdfReader(str(path)) as f:
+                sig = f.readSignal(0)
+                sig = (sig - np.mean(sig)) / (np.std(sig) + EPSILON)
+                return sig
+                
+        sig_ref_raw = load_raw_channel_0(ref_path)
+        sig_shift_raw = load_raw_channel_0(shift_path)
+        
+        save_path = None
+        if save_plot:
+            fname = f"spectrograms_combined_{ref_path.stem}_vs_{shift_path.stem}.png"
+            if prefix:
+                fname = f"{prefix}-{fname}"
+            save_path = out_dir / fname
+        
+        plot_combined_spectrograms(
+            sRef_raw=sig_ref_raw,
+            sShift_raw=sig_shift_raw,
+            sRef_cut=sig_ref_cut,
+            sShift_cut=sig_shift_cut,
+            fs_ref_raw=fs_ref,
+            fs_shift_raw=fs_shift,
+            fs_ref_cut=fs_ref,
+            fs_shift_cut=fs_shift,
+            name_ref=ref_path.name,
+            name_shift=shift_path.name,
+            title="Spectrograms: Raw (Top) vs Aligned (Bottom)",
+            save_path=str(save_path) if save_path else None,
+            show_plot=show_plot
         )
         
     print("[Cutter] Done.")
