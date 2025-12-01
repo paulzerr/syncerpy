@@ -440,22 +440,25 @@ def syncerpy(file_reference, file_shift, channel_reference=None, channel_shift=N
         print(f"[Plotting] Generating alignment plot (status: {status_str})...")
         EPSILON = 1e-12
         
-        # For cut signals, use actual cut data if available, otherwise use raw signals
-        if ref_data is not None and shift_data is not None:
-            sig_ref_cut = ref_data[0]
-            sig_shift_cut = shift_data[0]
-            sig_ref_cut = (sig_ref_cut - np.mean(sig_ref_cut)) / (np.std(sig_ref_cut) + EPSILON)
-            sig_shift_cut = (sig_shift_cut - np.mean(sig_shift_cut)) / (np.std(sig_shift_cut) + EPSILON)
-            # Cut signals are at original file sample rates
-            fs_ref_cut = ref_signal_headers[0].get('sample_frequency', ref_signal_headers[0].get('sample_rate'))
-            fs_shift_cut = shift_signal_headers[0].get('sample_frequency', shift_signal_headers[0].get('sample_rate'))
-        else:
-            # Use raw signals (already normalized) for diagnostic plot
-            sig_ref_cut = sRef
-            sig_shift_cut = sShift
-            # These are at the resampled rate
-            fs_ref_cut = fs
-            fs_shift_cut = fs
+        # Always compute aligned signals by applying offset to the resampled signals
+        # This ensures the aligned plot shows the actual alignment, not the raw signals
+        start_ref_samp = int(start_ref_sec * fs)
+        start_shift_samp = int(start_shift_sec * fs)
+        aligned_dur_samp = int(common_dur * fs) if common_dur > 0 else min(len(sRef) - start_ref_samp, len(sShift) - start_shift_samp)
+        
+        # Ensure we don't go out of bounds
+        if start_ref_samp < 0: start_ref_samp = 0
+        if start_shift_samp < 0: start_shift_samp = 0
+        end_ref_samp = min(start_ref_samp + aligned_dur_samp, len(sRef))
+        end_shift_samp = min(start_shift_samp + aligned_dur_samp, len(sShift))
+        
+        sig_ref_cut = sRef[start_ref_samp:end_ref_samp]
+        sig_shift_cut = sShift[start_shift_samp:end_shift_samp]
+        
+        # These are already normalized (sRef/sShift are normalized on load)
+        # Both are at the resampled rate
+        fs_ref_cut = fs
+        fs_shift_cut = fs
         
         # Add FAILED to filename if alignment was suspicious
         if offset_is_suspicious:

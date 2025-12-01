@@ -27,44 +27,23 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
         | (both from t=0)       |       |                       |
         +-----------------------+       +-----------------------+
         | Coarse Cross-Corr     |       | Zoomed View 1         |
-        |                       |       | (30 min from middle)  |
+        |                       |       | (1h from middle)      |
         +-----------------------+       +-----------------------+
         | Fine Search Results   |       | Zoomed View 2         |
-        |                       |       | (30 min from 2nd half)|
+        |                       |       | (1h from 2nd half)    |
         +-----------------------+       +-----------------------+
-    
-    Parameters:
-    -----------
-    sRef_raw, sShift_raw : array
-        Raw (unaligned) signals at fs_raw
-    sRef_cut, sShift_cut : array
-        Aligned/cut signals at fs_ref_cut and fs_shift_cut respectively
-    fs_raw : float
-        Sample rate for raw signals (typically 64Hz after resampling)
-    fs_ref_cut, fs_shift_cut : float
-        Sample rates for cut signals
-    offset_sec : float
-        Computed offset in seconds
-    name_ref, name_shift : str
-        Names/paths of the files (will extract just filename)
-    coarse_corr, coarse_lags : array
-        Coarse cross-correlation results
-    fine_search_data : dict, optional
-        Contains 'lags_ms', 'scores', 'best_lag_ms' for fine search plot
-    is_failed : bool
-        If True, adds a warning banner indicating alignment failed
     """
     
     # Extract just filenames
     name_ref = _get_filename(name_ref)
     name_shift = _get_filename(name_shift)
     
-    # Plot configuration
-    TITLE_FONT_SIZE = 16
-    LABEL_FONT_SIZE = 10
-    TICK_FONT_SIZE = 9
-    ANNOTATION_FONT_SIZE = 9
-    LEGEND_FONT_SIZE = 9
+    # Plot configuration - increased font sizes
+    TITLE_FONT_SIZE = 20
+    LABEL_FONT_SIZE = 14
+    TICK_FONT_SIZE = 12
+    ANNOTATION_FONT_SIZE = 12
+    RATIO_FONT_SIZE = 18
 
     def get_spec(sig, fs_local):
         win = int(plot_win_sec * fs_local)
@@ -97,29 +76,25 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
     # Create figure with 2 columns, 3 rows
     fig = plt.figure(figsize=(20, 16))
     
-    # Title with failure warning if applicable
-    if is_failed:
-        if abs(offset_sec) >= 3600:
-            offset_str = f"{offset_sec/3600:.2f} hours"
-        elif abs(offset_sec) >= 60:
-            offset_str = f"{offset_sec/60:.2f} min"
-        else:
-            offset_str = f"{offset_sec:.2f} s"
-        title = f"⚠️ ALIGNMENT FAILED - Offset: {offset_str} (suspicious)"
-        plt.suptitle(title, fontsize=TITLE_FONT_SIZE, color='red', fontweight='bold', y=0.98)
-        
-        fig.text(0.5, 0.96,
-                "Files may be corrupted, mismatched, or from different recordings.",
-                ha='center', va='top', fontsize=10,
-                color='darkred', style='italic',
-                bbox=dict(boxstyle='round', facecolor='lightyellow', edgecolor='red', alpha=0.8))
+    # Format offset string
+    if abs(offset_sec) >= 3600:
+        offset_str = f"{offset_sec/3600:.2f} hours"
+    elif abs(offset_sec) >= 60:
+        offset_str = f"{offset_sec/60:.2f} min"
     else:
-        plt.suptitle(f"Alignment Analysis - Computed offset: {offset_sec*1000:.2f} ms", 
-                     fontsize=TITLE_FONT_SIZE, y=0.98)
+        offset_str = f"{offset_sec*1000:.2f} ms"
+    
+    # Title with filename and offset info
+    if is_failed:
+        title_lines = f"{name_ref} (REFERENCE)\n{name_shift} (SHIFTED)\nOFFSET = {offset_str} ⚠️ SUSPICIOUS"
+        plt.suptitle(title_lines, fontsize=TITLE_FONT_SIZE, color='red', fontweight='bold', y=0.99)
+    else:
+        title_lines = f"{name_ref} (REFERENCE)\n{name_shift} (SHIFTED)\nOFFSET = {offset_str}"
+        plt.suptitle(title_lines, fontsize=TITLE_FONT_SIZE, y=0.99)
 
     # Create 3x2 grid
     gs = fig.add_gridspec(3, 2, height_ratios=[2, 1, 1], width_ratios=[1, 1], 
-                          hspace=0.35, wspace=0.20, left=0.05, right=0.92, top=0.93, bottom=0.05)
+                          hspace=0.35, wspace=0.20, left=0.05, right=0.95, top=0.88, bottom=0.05)
     
     # ----- LEFT COLUMN -----
     
@@ -166,9 +141,9 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
     ax_raw_top.tick_params(labelbottom=False)
     ax_raw_top.set_xlim(0, t_max_raw/3600)
     ax_raw_top.set_ylim(0, plot_max_freq)
-    ax_raw_top.text(1.02, 0.5, f"{name_ref} (REF)", transform=ax_raw_top.transAxes, 
-                    rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
-    ax_raw_top.set_title("Unaligned (Raw) TFRs", fontsize=LABEL_FONT_SIZE, pad=5)
+    ax_raw_top.text(1.01, 0.5, "REFERENCE", transform=ax_raw_top.transAxes, 
+                    rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE, fontweight='bold')
+    ax_raw_top.set_title("Unaligned TFRs", fontsize=LABEL_FONT_SIZE, pad=5)
     
     # Bottom: Shift raw (mirrored)
     ax_raw_bot.pcolormesh(tS_raw/3600, fS_raw, SS_raw, shading="auto", 
@@ -179,25 +154,51 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
     ax_raw_bot.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
     ax_raw_bot.set_xlim(0, t_max_raw/3600)
     ax_raw_bot.set_ylim(plot_max_freq, 0)  # Inverted
-    ax_raw_bot.text(1.02, 0.5, f"{name_shift} (SHIFTED)", transform=ax_raw_bot.transAxes, 
-                    rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
+    ax_raw_bot.text(1.01, 0.5, "SHIFTED", transform=ax_raw_bot.transAxes, 
+                    rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE, fontweight='bold')
 
     # --- Coarse Correlation Plot ---
     if coarse_corr is not None and coarse_lags is not None:
         ax_coarse.plot(coarse_lags, coarse_corr, color='blue', linewidth=0.8)
         
-        # Mark max correlation
+        # Find max (peak) correlation
         max_idx = np.argmax(coarse_corr)
         max_lag = coarse_lags[max_idx]
-        ax_coarse.axvline(max_lag, color='red', linestyle='--', linewidth=1, alpha=0.7)
-        ax_coarse.plot(max_lag, coarse_corr[max_idx], marker='o', color='red', markersize=6, 
-                       label=f'Max: {max_lag:.1f}s', zorder=5)
+        max_val = coarse_corr[max_idx]
+        
+        # Find second peak (next highest local maximum)
+        corr_copy = coarse_corr.copy()
+        exclude_width = max(10, len(coarse_corr) // 50)
+        exclude_start = max(0, max_idx - exclude_width)
+        exclude_end = min(len(corr_copy), max_idx + exclude_width)
+        corr_copy[exclude_start:exclude_end] = -np.inf
+        second_idx = np.argmax(corr_copy)
+        second_val = coarse_corr[second_idx]
+        
+        # Calculate ratio
+        if second_val > 0:
+            peak_ratio = max_val / second_val
+        else:
+            peak_ratio = np.inf
+        
+        # Mark max with arrow from bottom and red dot
+        ylim = ax_coarse.get_ylim()
+        if ylim[0] == ylim[1]:
+            ylim = (coarse_corr.min(), coarse_corr.max())
+        ax_coarse.annotate('', xy=(max_lag, max_val), xytext=(max_lag, ylim[0]),
+                          arrowprops=dict(arrowstyle='-|>', color='red', lw=2))
+        ax_coarse.plot(max_lag, max_val, marker='o', color='red', markersize=8, zorder=5)
+        
+        # Show ratio in large font
+        ratio_text = f"Peak ratio: {peak_ratio:.2f}" if peak_ratio < 100 else "Peak ratio: >100"
+        ax_coarse.text(0.98, 0.95, ratio_text, transform=ax_coarse.transAxes,
+                      fontsize=RATIO_FONT_SIZE, ha='right', va='top', fontweight='bold',
+                      bbox=dict(boxstyle='round', facecolor='white', edgecolor='gray', alpha=0.8))
         
         ax_coarse.set_xlabel("Lag (seconds)", fontsize=LABEL_FONT_SIZE)
         ax_coarse.set_ylabel("Correlation", fontsize=LABEL_FONT_SIZE)
         ax_coarse.set_title("Coarse Cross-Correlation", fontsize=LABEL_FONT_SIZE, pad=5)
         ax_coarse.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
-        ax_coarse.legend(fontsize=LEGEND_FONT_SIZE, loc='upper right')
         ax_coarse.grid(True, alpha=0.3)
     else:
         ax_coarse.text(0.5, 0.5, "No coarse correlation data", ha='center', va='center', 
@@ -211,16 +212,43 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
         best_lag_ms = fine_search_data.get('best_lag_ms', None)
         
         if len(lags_ms) > 0 and len(scores) > 0:
-            ax_fine.plot(lags_ms, scores, color='green', linewidth=0.8)
+            scores_arr = np.array(scores)
+            lags_arr = np.array(lags_ms)
+            ax_fine.plot(lags_arr, scores_arr, color='green', linewidth=0.8)
+            
             if best_lag_ms is not None:
-                best_idx = np.argmin(np.abs(np.array(lags_ms) - best_lag_ms))
-                if best_idx < len(scores):
-                    ax_fine.axvline(best_lag_ms, color='red', linestyle='--', linewidth=1, alpha=0.7)
-                    ax_fine.plot(best_lag_ms, scores[best_idx], marker='o', color='red', markersize=6,
-                                label=f'Best: {best_lag_ms:.2f}ms', zorder=5)
+                best_idx = np.argmin(np.abs(lags_arr - best_lag_ms))
+                if best_idx < len(scores_arr):
+                    best_val = scores_arr[best_idx]
+                    
+                    # Find second peak
+                    scores_copy = scores_arr.copy()
+                    exclude_width = max(5, len(scores_arr) // 50)
+                    exclude_start = max(0, best_idx - exclude_width)
+                    exclude_end = min(len(scores_copy), best_idx + exclude_width)
+                    scores_copy[exclude_start:exclude_end] = -np.inf
+                    second_idx = np.argmax(scores_copy)
+                    second_val = scores_arr[second_idx]
+                    
+                    # Calculate ratio
+                    if second_val > 0:
+                        peak_ratio = best_val / second_val
+                    else:
+                        peak_ratio = np.inf
+                    
+                    # Mark with arrow from bottom and red dot
+                    ax_fine.annotate('', xy=(best_lag_ms, best_val), xytext=(best_lag_ms, scores_arr.min()),
+                                    arrowprops=dict(arrowstyle='-|>', color='red', lw=2))
+                    ax_fine.plot(best_lag_ms, best_val, marker='o', color='red', markersize=8, zorder=5)
+                    
+                    # Show ratio in large font
+                    ratio_text = f"Peak ratio: {peak_ratio:.2f}" if peak_ratio < 100 else "Peak ratio: >100"
+                    ax_fine.text(0.98, 0.95, ratio_text, transform=ax_fine.transAxes,
+                                fontsize=RATIO_FONT_SIZE, ha='right', va='top', fontweight='bold',
+                                bbox=dict(boxstyle='round', facecolor='white', edgecolor='gray', alpha=0.8))
+            
             ax_fine.set_xlabel("Lag (ms)", fontsize=LABEL_FONT_SIZE)
             ax_fine.set_ylabel("MI Score", fontsize=LABEL_FONT_SIZE)
-            ax_fine.legend(fontsize=LEGEND_FONT_SIZE, loc='upper right')
             ax_fine.grid(True, alpha=0.3)
         else:
             ax_fine.text(0.5, 0.5, "No fine search data available", ha='center', va='center',
@@ -244,13 +272,13 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
     ax_aligned_top.tick_params(labelbottom=False)
     ax_aligned_top.set_xlim(0, t_max_cut/3600)
     ax_aligned_top.set_ylim(0, plot_max_freq)
-    ax_aligned_top.text(1.02, 0.5, f"{name_ref} (REF)", transform=ax_aligned_top.transAxes, 
-                        rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
+    ax_aligned_top.text(1.01, 0.5, "REFERENCE", transform=ax_aligned_top.transAxes, 
+                        rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE, fontweight='bold')
     if is_failed:
-        ax_aligned_top.set_title("Raw Signals (alignment failed)", fontsize=LABEL_FONT_SIZE, 
+        ax_aligned_top.set_title("Aligned TFRs (suspicious)", fontsize=LABEL_FONT_SIZE, 
                                   pad=5, color='red')
     else:
-        ax_aligned_top.set_title("Aligned & Cut TFRs (Full)", fontsize=LABEL_FONT_SIZE, pad=5)
+        ax_aligned_top.set_title("Aligned TFRs", fontsize=LABEL_FONT_SIZE, pad=5)
     
     # Bottom: Shift cut (mirrored)
     ax_aligned_bot.pcolormesh(tS_cut/3600, fS_cut, SS_cut, shading="auto", 
@@ -261,12 +289,12 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
     ax_aligned_bot.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
     ax_aligned_bot.set_xlim(0, t_max_cut/3600)
     ax_aligned_bot.set_ylim(plot_max_freq, 0)
-    ax_aligned_bot.text(1.02, 0.5, f"{name_shift} (SHIFTED)", transform=ax_aligned_bot.transAxes, 
-                        rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
+    ax_aligned_bot.text(1.01, 0.5, "SHIFTED", transform=ax_aligned_bot.transAxes, 
+                        rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE, fontweight='bold')
 
     # --- Zoomed Views ---
-    # Calculate zoom windows (30 minutes each)
-    zoom_duration_sec = 30 * 60  # 30 minutes in seconds
+    # Calculate zoom windows (1 hour each)
+    zoom_duration_sec = 60 * 60  # 1 hour in seconds
     total_cut_sec = t_max_cut
     
     # Zoom 1: Middle of recording
@@ -287,9 +315,9 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
     ax_zoom1_top.tick_params(labelbottom=False)
     ax_zoom1_top.set_xlim(zoom1_start_hr, zoom1_end_hr)
     ax_zoom1_top.set_ylim(0, plot_max_freq)
-    ax_zoom1_top.text(1.02, 0.5, f"{name_ref} (REF)", transform=ax_zoom1_top.transAxes, 
-                      rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
-    ax_zoom1_top.set_title(f"Zoomed: Middle ({zoom1_start_hr:.2f}-{zoom1_end_hr:.2f}h)", 
+    ax_zoom1_top.text(1.01, 0.5, "REFERENCE", transform=ax_zoom1_top.transAxes, 
+                      rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE, fontweight='bold')
+    ax_zoom1_top.set_title(f"Zoomed: {zoom1_start_hr:.2f}-{zoom1_end_hr:.2f}h", 
                            fontsize=LABEL_FONT_SIZE, pad=5)
     
     ax_zoom1_bot.pcolormesh(tS_cut/3600, fS_cut, SS_cut, shading="auto", 
@@ -300,8 +328,8 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
     ax_zoom1_bot.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
     ax_zoom1_bot.set_xlim(zoom1_start_hr, zoom1_end_hr)
     ax_zoom1_bot.set_ylim(plot_max_freq, 0)
-    ax_zoom1_bot.text(1.02, 0.5, f"{name_shift} (SHIFTED)", transform=ax_zoom1_bot.transAxes, 
-                      rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
+    ax_zoom1_bot.text(1.01, 0.5, "SHIFTED", transform=ax_zoom1_bot.transAxes, 
+                      rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE, fontweight='bold')
     
     # Plot Zoom 2
     ax_zoom2_top.pcolormesh(tR_cut/3600, fR_cut, SR_cut, shading="auto", 
@@ -311,9 +339,9 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
     ax_zoom2_top.tick_params(labelbottom=False)
     ax_zoom2_top.set_xlim(zoom2_start_hr, zoom2_end_hr)
     ax_zoom2_top.set_ylim(0, plot_max_freq)
-    ax_zoom2_top.text(1.02, 0.5, f"{name_ref} (REF)", transform=ax_zoom2_top.transAxes, 
-                      rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
-    ax_zoom2_top.set_title(f"Zoomed: 2nd Half ({zoom2_start_hr:.2f}-{zoom2_end_hr:.2f}h)", 
+    ax_zoom2_top.text(1.01, 0.5, "REFERENCE", transform=ax_zoom2_top.transAxes, 
+                      rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE, fontweight='bold')
+    ax_zoom2_top.set_title(f"Zoomed: {zoom2_start_hr:.2f}-{zoom2_end_hr:.2f}h", 
                            fontsize=LABEL_FONT_SIZE, pad=5)
     
     ax_zoom2_bot.pcolormesh(tS_cut/3600, fS_cut, SS_cut, shading="auto", 
@@ -324,8 +352,8 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
     ax_zoom2_bot.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
     ax_zoom2_bot.set_xlim(zoom2_start_hr, zoom2_end_hr)
     ax_zoom2_bot.set_ylim(plot_max_freq, 0)
-    ax_zoom2_bot.text(1.02, 0.5, f"{name_shift} (SHIFTED)", transform=ax_zoom2_bot.transAxes, 
-                      rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
+    ax_zoom2_bot.text(1.01, 0.5, "SHIFTED", transform=ax_zoom2_bot.transAxes, 
+                      rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE, fontweight='bold')
     
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
