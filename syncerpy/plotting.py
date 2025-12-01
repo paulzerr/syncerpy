@@ -4,6 +4,40 @@ from scipy import signal
 from lspopt import spectrogram_lspopt
 from pathlib import Path
 
+# =============================================================================
+# PLOT CONFIGURATION - All adjustable parameters
+# =============================================================================
+
+# Figure dimensions (2:1 aspect ratio)
+FIG_WIDTH = 20
+FIG_HEIGHT = 10
+
+# Font sizes
+TITLE_FONT_SIZE = 20
+LABEL_FONT_SIZE = 14
+TICK_FONT_SIZE = 12
+ANNOTATION_FONT_SIZE = 12
+RATIO_FONT_SIZE = 18
+
+# Grid layout
+HEIGHT_RATIOS = [2, 1.5, 1.5]  # Top row taller, bottom rows increased for zoom
+WIDTH_RATIOS = [1, 1]
+GRID_HSPACE = 0.35
+GRID_WSPACE = 0.20
+GRID_LEFT = 0.05
+GRID_RIGHT = 0.95
+GRID_TOP = 0.88
+GRID_BOTTOM = 0.05
+
+# Zoom view settings
+ZOOM_DURATION_SEC = 60 * 60  # 1 hour in seconds
+
+# Arrow settings for result plots
+ARROW_HEIGHT_RATIO = 0.15  # Fraction of plot height for arrow
+
+# Save settings
+SAVE_DPI = 150
+
 
 def _get_filename(name_or_path):
     """Extract just the filename (stem) from a path or name."""
@@ -37,13 +71,6 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
     # Extract just filenames
     name_ref = _get_filename(name_ref)
     name_shift = _get_filename(name_shift)
-    
-    # Plot configuration - increased font sizes
-    TITLE_FONT_SIZE = 20
-    LABEL_FONT_SIZE = 14
-    TICK_FONT_SIZE = 12
-    ANNOTATION_FONT_SIZE = 12
-    RATIO_FONT_SIZE = 18
 
     def get_spec(sig, fs_local):
         win = int(plot_win_sec * fs_local)
@@ -74,7 +101,7 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
     vmin_Sc, vmax_Sc = get_robust_lims(SS_cut)
 
     # Create figure with 2 columns, 3 rows
-    fig = plt.figure(figsize=(24, 13.5))  # 16:9 aspect ratio
+    fig = plt.figure(figsize=(FIG_WIDTH, FIG_HEIGHT))
     
     # Format offset string
     if abs(offset_sec) >= 3600:
@@ -93,8 +120,9 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
         plt.suptitle(title_lines, fontsize=TITLE_FONT_SIZE, y=0.99)
 
     # Create 3x2 grid
-    gs = fig.add_gridspec(3, 2, height_ratios=[2, 1, 1], width_ratios=[1, 1], 
-                          hspace=0.35, wspace=0.20, left=0.05, right=0.95, top=0.88, bottom=0.05)
+    gs = fig.add_gridspec(3, 2, height_ratios=HEIGHT_RATIOS, width_ratios=WIDTH_RATIOS,
+                          hspace=GRID_HSPACE, wspace=GRID_WSPACE,
+                          left=GRID_LEFT, right=GRID_RIGHT, top=GRID_TOP, bottom=GRID_BOTTOM)
     
     # ----- LEFT COLUMN -----
     
@@ -185,7 +213,7 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
         ylim = ax_coarse.get_ylim()
         if ylim[0] == ylim[1]:
             ylim = (coarse_corr.min(), coarse_corr.max())
-        arrow_height = (ylim[1] - ylim[0]) * 0.15  # Small arrow at bottom
+        arrow_height = (ylim[1] - ylim[0]) * ARROW_HEIGHT_RATIO
         ax_coarse.annotate('', xy=(max_lag, ylim[0] + arrow_height), xytext=(max_lag, ylim[0]),
                           arrowprops=dict(arrowstyle='-|>', color='red', lw=2))
         ax_coarse.plot(max_lag, max_val, marker='o', color='red', markersize=8, zorder=5)
@@ -240,7 +268,7 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
                     
                     # Mark with small arrow at bottom and red dot at peak
                     ylim_fine = (scores_arr.min(), scores_arr.max())
-                    arrow_height_fine = (ylim_fine[1] - ylim_fine[0]) * 0.15
+                    arrow_height_fine = (ylim_fine[1] - ylim_fine[0]) * ARROW_HEIGHT_RATIO
                     ax_fine.annotate('', xy=(best_lag_ms, ylim_fine[0] + arrow_height_fine),
                                     xytext=(best_lag_ms, ylim_fine[0]),
                                     arrowprops=dict(arrowstyle='-|>', color='red', lw=2))
@@ -299,19 +327,18 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
                         rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE, fontweight='bold')
 
     # --- Zoomed Views ---
-    # Calculate zoom windows (1 hour each)
-    zoom_duration_sec = 60 * 60  # 1 hour in seconds
+    # Calculate zoom windows
     total_cut_sec = t_max_cut
     
     # Zoom 1: Middle of recording
     zoom1_center_sec = total_cut_sec / 2
-    zoom1_start_hr = max(0, (zoom1_center_sec - zoom_duration_sec/2)) / 3600
-    zoom1_end_hr = min(total_cut_sec, (zoom1_center_sec + zoom_duration_sec/2)) / 3600
+    zoom1_start_hr = max(0, (zoom1_center_sec - ZOOM_DURATION_SEC/2)) / 3600
+    zoom1_end_hr = min(total_cut_sec, (zoom1_center_sec + ZOOM_DURATION_SEC/2)) / 3600
     
     # Zoom 2: Middle of second half
     zoom2_center_sec = total_cut_sec * 0.75
-    zoom2_start_hr = max(0, (zoom2_center_sec - zoom_duration_sec/2)) / 3600
-    zoom2_end_hr = min(total_cut_sec, (zoom2_center_sec + zoom_duration_sec/2)) / 3600
+    zoom2_start_hr = max(0, (zoom2_center_sec - ZOOM_DURATION_SEC/2)) / 3600
+    zoom2_end_hr = min(total_cut_sec, (zoom2_center_sec + ZOOM_DURATION_SEC/2)) / 3600
     
     # Plot Zoom 1
     ax_zoom1_top.pcolormesh(tR_cut/3600, fR_cut, SR_cut, shading="auto", 
@@ -362,7 +389,7 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
                       rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE, fontweight='bold')
     
     if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.savefig(save_path, dpi=SAVE_DPI, bbox_inches='tight')
         print(f"[Plotting] Saved complete alignment plot to {save_path}")
         
     if show_plot:
