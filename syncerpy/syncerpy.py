@@ -18,8 +18,12 @@ COARSE_BANDPASS_FREQ = [0.5, 30]
 COARSE_ENVELOPE_ORDER = 4
 COARSE_ENVELOPE_FREQ = 0.5
 
+# Maximum reasonable offset (hours) - files with larger offsets are likely corrupted
+MAX_REASONABLE_OFFSET_HOURS = 2.0
+
 FINE_COMPARE_WIN_SEC = 60.0
 FINE_SEARCH_RANGE_SEC = 3.0
+FINE_SEARCH_TIMEOUT_SEC = 30.0  # Timeout for fine search in seconds
 FINE_SPECT_WIN_SEC = 1.0
 FINE_BINS = 64
 
@@ -142,6 +146,13 @@ def run_fine_stage(sRef, sShift, fs, current_offset):
     compare_win = FINE_COMPARE_WIN_SEC
     search_range = FINE_SEARCH_RANGE_SEC
     
+    # Check if coarse offset is unreasonably large (likely corrupted file)
+    max_offset_sec = MAX_REASONABLE_OFFSET_HOURS * 3600
+    if abs(current_offset) > max_offset_sec:
+        print(f"  [Fine] WARNING: Coarse offset {current_offset:.1f}s exceeds max reasonable offset ({max_offset_sec:.0f}s).")
+        print(f"  [Fine] Skipping fine search - files may be corrupted or mismatched.")
+        return current_offset
+    
     # 1. Slice Data from Reference
     mid_idx = len(sRef) // 2
     start_Ref = mid_idx - int(compare_win/2 * fs)
@@ -153,6 +164,13 @@ def run_fine_stage(sRef, sShift, fs, current_offset):
     margin_samp = int(search_range * fs)
     start_Shift_wide = center_Shift - margin_samp
     end_Shift_wide = center_Shift + len(chunkRef) + margin_samp
+    
+    # Validate that the shift window is within bounds
+    if start_Shift_wide < 0 or end_Shift_wide > len(sShift):
+        print(f"  [Fine] WARNING: Shift window out of bounds (start={start_Shift_wide}, end={end_Shift_wide}, len={len(sShift)}).")
+        print(f"  [Fine] Skipping fine search - coarse offset may be incorrect.")
+        return current_offset
+    
     chunkShift_wide = sShift[max(0, start_Shift_wide):min(len(sShift), end_Shift_wide)]
     
     if len(chunkRef) < fs or len(chunkShift_wide) < fs:
@@ -160,6 +178,7 @@ def run_fine_stage(sRef, sShift, fs, current_offset):
         return current_offset
 
     # compute features
+    print("  [Fine] Computing spectrogram features...")
     featRef = compute_spectrogram_features(chunkRef, fs, win_sec=FINE_SPECT_WIN_SEC, hop_type="1_sample")
     featShift = compute_spectrogram_features(chunkShift_wide, fs, win_sec=FINE_SPECT_WIN_SEC, hop_type="1_sample")
     
@@ -170,9 +189,25 @@ def run_fine_stage(sRef, sShift, fs, current_offset):
     # search every sample in the margin
     search_len = len(qShift) - len(featRef)
     
+    if search_len <= 0:
+        print(f"  [Fine] No search range available (search_len={search_len}), skipping.")
+        return current_offset
+    
+    print(f"  [Fine] Searching {search_len} positions...")
+    
     best_mi = -1
     best_local_lag = 0
+    start_time = time.time()
+    
     for i in range(search_len):
+        # Check timeout periodically
+        if i % 100 == 0:
+            elapsed = time.time() - start_time
+            if elapsed > FINE_SEARCH_TIMEOUT_SEC:
+                print(f"  [Fine] WARNING: Search timeout after {elapsed:.1f}s at position {i}/{search_len}.")
+                print(f"  [Fine] Using best match found so far.")
+                break
+        
         sliceShift = qShift[i : i + len(featRef)]
         score = calc_mi(qRef, sliceShift.ravel(), FINE_BINS)
         if score > best_mi:
@@ -182,7 +217,7 @@ def run_fine_stage(sRef, sShift, fs, current_offset):
     best_start_Shift_global = start_Shift_wide + best_local_lag
     final_offset = (best_start_Shift_global - start_Ref) / fs
     
-    print(f"  [Fine search] offset: {final_offset:.5f} s")
+    print(f"  [Fine search] offset: {final_offset:.5f} s (MI={best_mi:.4f})")
     return final_offset
 
 def syncerpy(file_reference, file_shift, channel_reference=None, channel_shift=None,
@@ -218,7 +253,7 @@ def syncerpy(file_reference, file_shift, channel_reference=None, channel_shift=N
         offset : float
             Time offset in seconds
     If cut_files=True:
-        tuple : (out_name_ref, out_name_shift)
+        tuple : (out_name_ref, out_name_shift) or (None, None) if alignment failed
             Paths to the aligned output files
     """
     t0 = time.time()
@@ -238,19 +273,32 @@ def syncerpy(file_reference, file_shift, channel_reference=None, channel_shift=N
 
     # 2. Calculate offset
     offset, coarse_corr, coarse_lags = run_coarse_stage(sRef, sShift, fs)
+    coarse_offset = offset  # Save for diagnostics
     offset = run_fine_stage(sRef, sShift, fs, offset)
     
-    print(f"\n{'='*30}\nOFFSET: {offset*1000:.2f} ms\n{'='*30}")
+    # Check if offset is reasonable
+    max_offset_sec = MAX_REASONABLE_OFFSET_HOURS * 3600
+    offset_is_suspicious = abs(offset) > max_offset_sec
+    
+    if offset_is_suspicious:
+        print(f"\n{'='*30}")
+        print(f"WARNING: SUSPICIOUS OFFSET DETECTED!")
+        print(f"OFFSET: {offset:.2f} s ({offset/3600:.2f} hours)")
+        print(f"This exceeds the maximum reasonable offset of {MAX_REASONABLE_OFFSET_HOURS} hours.")
+        print(f"Files may be corrupted or from different recordings.")
+        print(f"{'='*30}")
+    else:
+        print(f"\n{'='*30}\nOFFSET: {offset*1000:.2f} ms\n{'='*30}")
+    
     print(f"Total execution time: {time.time() - t0:.3f} s")
     
     # 3. If cut_files is False, just return the offset
     if not cut_files:
         return offset
     
-    # 4. If cut_files is True, perform the cutting and alignment
+    # 4. Open readers to get file info (needed for plots even if cutting fails)
     print(f"[Cutter] Processing {file_reference.name} and {file_shift.name}...")
     
-    # Open readers
     f_ref = pyedflib.EdfReader(str(file_reference))
     f_shift = pyedflib.EdfReader(str(file_shift))
     
@@ -272,15 +320,25 @@ def syncerpy(file_reference, file_shift, channel_reference=None, channel_shift=N
     else:
         start_ref_sec = 0
         start_shift_sec = abs(offset)
-        
-    print(f"[Cutter] Aligning starts: Cut {start_ref_sec:.3f}s from Ref, {start_shift_sec:.3f}s from Shift")
     
     # Calculate common duration
     rem_ref = ref_dur - start_ref_sec
     rem_shift = shift_dur - start_shift_sec
     common_dur = min(rem_ref, rem_shift)
     
-    print(f"[Cutter] Common duration: {common_dur:.3f}s")
+    # Check if cutting is viable
+    cutting_viable = common_dur > 0 and not offset_is_suspicious
+    
+    if not cutting_viable:
+        if common_dur <= 0:
+            print(f"[Cutter] ERROR: No overlapping region (common_dur={common_dur:.1f}s).")
+        if offset_is_suspicious:
+            print(f"[Cutter] WARNING: Skipping file cutting due to suspicious offset.")
+        print(f"[Cutter] Start ref: {start_ref_sec:.1f}s, Start shift: {start_shift_sec:.1f}s")
+        print(f"[Cutter] Ref duration: {ref_dur:.1f}s, Shift duration: {shift_dur:.1f}s")
+    else:
+        print(f"[Cutter] Aligning starts: Cut {start_ref_sec:.3f}s from Ref, {start_shift_sec:.3f}s from Shift")
+        print(f"[Cutter] Common duration: {common_dur:.3f}s")
     
     # Helper to process and write file
     def process_file(reader, writer_path, start_sec, duration_sec, signal_headers, main_header):
@@ -328,32 +386,48 @@ def syncerpy(file_reference, file_shift, channel_reference=None, channel_shift=N
     out_name_ref = out_dir / fname_ref
     out_name_shift = out_dir / fname_shift
     
-    print(f"[Cutter] Saving to {out_name_ref}...")
-    ref_data = process_file(f_ref, out_name_ref, start_ref_sec, common_dur, ref_signal_headers, ref_header)
+    ref_data = None
+    shift_data = None
     
-    print(f"[Cutter] Saving to {out_name_shift}...")
-    shift_data = process_file(f_shift, out_name_shift, start_shift_sec, common_dur, shift_signal_headers, shift_header)
+    if cutting_viable:
+        print(f"[Cutter] Saving to {out_name_ref}...")
+        ref_data = process_file(f_ref, out_name_ref, start_ref_sec, common_dur, ref_signal_headers, ref_header)
+        
+        print(f"[Cutter] Saving to {out_name_shift}...")
+        shift_data = process_file(f_shift, out_name_shift, start_shift_sec, common_dur, shift_signal_headers, shift_header)
+    else:
+        out_name_ref = None
+        out_name_shift = None
     
     # Close readers
     f_ref._close()
     f_shift._close()
     
-    # 5. Generate combined plot if requested
+    # 5. Generate plot if requested - ALWAYS generate for diagnostics, even if cutting failed
     if plot:
-        print("[Plotting] Generating complete alignment plot...")
+        status_str = "FAILED" if offset_is_suspicious else "OK"
+        print(f"[Plotting] Generating alignment plot (status: {status_str})...")
         EPSILON = 1e-12
         
-        # Get cut signals (first channel)
-        sig_ref_cut = ref_data[0]
-        sig_shift_cut = shift_data[0]
-        
-        sig_ref_cut = (sig_ref_cut - np.mean(sig_ref_cut)) / (np.std(sig_ref_cut) + EPSILON)
-        sig_shift_cut = (sig_shift_cut - np.mean(sig_shift_cut)) / (np.std(sig_shift_cut) + EPSILON)
+        # For cut signals, use actual cut data if available, otherwise use raw signals
+        if ref_data is not None and shift_data is not None:
+            sig_ref_cut = ref_data[0]
+            sig_shift_cut = shift_data[0]
+            sig_ref_cut = (sig_ref_cut - np.mean(sig_ref_cut)) / (np.std(sig_ref_cut) + EPSILON)
+            sig_shift_cut = (sig_shift_cut - np.mean(sig_shift_cut)) / (np.std(sig_shift_cut) + EPSILON)
+        else:
+            # Use raw signals (already normalized) for diagnostic plot
+            sig_ref_cut = sRef
+            sig_shift_cut = sShift
         
         fs_ref = ref_signal_headers[0].get('sample_frequency', ref_signal_headers[0].get('sample_rate'))
         fs_shift = shift_signal_headers[0].get('sample_frequency', shift_signal_headers[0].get('sample_rate'))
         
-        fname = f"alignment_complete_{file_reference.stem}_vs_{file_shift.stem}.png"
+        # Add FAILED to filename if alignment was suspicious
+        if offset_is_suspicious:
+            fname = f"alignment_FAILED_{file_reference.stem}_vs_{file_shift.stem}.png"
+        else:
+            fname = f"alignment_complete_{file_reference.stem}_vs_{file_shift.stem}.png"
         if prefix:
             fname = f"{prefix}-{fname}"
         save_path = out_dir / fname
@@ -374,8 +448,13 @@ def syncerpy(file_reference, file_shift, channel_reference=None, channel_shift=N
             plot_overlap_divisor=PLOT_OVERLAP_DIVISOR,
             plot_max_freq=PLOT_MAX_FREQ,
             save_path=str(save_path),
-            show_plot=False
+            show_plot=False,
+            is_failed=offset_is_suspicious
         )
         
-    print("[Cutter] Done.")
+    if cutting_viable:
+        print("[Cutter] Done.")
+    else:
+        print("[Cutter] Done (no files written due to alignment issues).")
+    
     return out_name_ref, out_name_shift

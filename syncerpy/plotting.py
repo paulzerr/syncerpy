@@ -319,12 +319,17 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
                            name_ref, name_shift,
                            coarse_corr=None, coarse_lags=None,
                            plot_win_sec=30, plot_overlap_divisor=4, plot_max_freq=30,
-                           save_path=None, show_plot=False):
+                           save_path=None, show_plot=False, is_failed=False):
     """
     Creates a single comprehensive plot showing:
     1. Unaligned (raw) TFRs (mirrored)
     2. Aligned (cut) TFRs (mirrored)
     3. Correlation plot
+    
+    Parameters:
+    -----------
+    is_failed : bool
+        If True, adds a warning banner indicating alignment failed
     """
     
     # Plot configuration
@@ -361,7 +366,28 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
 
     # Create figure with 3 sections: Raw TFRs, Aligned TFRs, Correlation
     fig = plt.figure(figsize=(16, 18))
-    plt.suptitle(f"Alignment Analysis - Computed offset: {offset_sec*1000:.2f} ms", fontsize=TITLE_FONT_SIZE)
+    
+    # Title with failure warning if applicable
+    if is_failed:
+        # Format large offset nicely
+        if abs(offset_sec) >= 3600:
+            offset_str = f"{offset_sec/3600:.2f} hours"
+        elif abs(offset_sec) >= 60:
+            offset_str = f"{offset_sec/60:.2f} min"
+        else:
+            offset_str = f"{offset_sec:.2f} s"
+        title = f"⚠️ ALIGNMENT FAILED - Offset: {offset_str} (suspicious)"
+        plt.suptitle(title, fontsize=TITLE_FONT_SIZE, color='red', fontweight='bold')
+        
+        # Add warning text box
+        fig.text(0.5, 0.94,
+                "Files may be corrupted, mismatched, or from different recordings.\n"
+                "The computed offset is unreasonably large. Manual inspection recommended.",
+                ha='center', va='top', fontsize=11,
+                color='darkred', style='italic',
+                bbox=dict(boxstyle='round', facecolor='lightyellow', edgecolor='red', alpha=0.8))
+    else:
+        plt.suptitle(f"Alignment Analysis - Computed offset: {offset_sec*1000:.2f} ms", fontsize=TITLE_FONT_SIZE)
 
     # Create outer grid: 3 rows (Raw, Aligned, Correlation)
     gs_outer = fig.add_gridspec(3, 1, height_ratios=[2, 2, 1], hspace=0.35)
@@ -414,7 +440,10 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
     ax3.tick_params(labelbottom=False)
     ax3.set_xlim(0, t_max_cut/3600)
     ax3.text(1.02, 0.5, f"{name_ref} (Aligned)", transform=ax3.transAxes, rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
-    ax3.set_title("Aligned & Cut TFRs", fontsize=LABEL_FONT_SIZE, pad=10)
+    if is_failed:
+        ax3.set_title("Raw Signals (alignment failed - no cutting performed)", fontsize=LABEL_FONT_SIZE, pad=10, color='red')
+    else:
+        ax3.set_title("Aligned & Cut TFRs", fontsize=LABEL_FONT_SIZE, pad=10)
 
     # Plot 4 (Shift Cut)
     ax4.pcolormesh(tS_cut/3600, fS_cut, SS_cut, shading="auto", cmap="Spectral_r", vmin=vmin_Sc, vmax=vmax_Sc)
