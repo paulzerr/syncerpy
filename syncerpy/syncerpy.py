@@ -29,7 +29,7 @@ FINE_BINS = 64
 
 PLOT_WIN_SEC = 30
 PLOT_OVERLAP_DIVISOR = 4
-PLOT_MAX_FREQ = 30
+PLOT_MAX_FREQ = 20
 
 def print_channels(file_reference, file_shift):
     """Prints the available channels and their sampling rates in the given EDF files."""
@@ -142,7 +142,15 @@ def run_coarse_stage(sRef, sShift, fs):
     return offset_sec, corr, lags
 
 def run_fine_stage(sRef, sShift, fs, current_offset):
-    """Refines offset using high-res (1-sample hop) spectrograms."""
+    """
+    Refines offset using high-res (1-sample hop) spectrograms.
+    
+    Returns:
+    --------
+    tuple : (final_offset, fine_search_data)
+        final_offset : float - refined offset in seconds
+        fine_search_data : dict or None - contains 'lags_ms', 'scores', 'best_lag_ms' for plotting
+    """
     compare_win = FINE_COMPARE_WIN_SEC
     search_range = FINE_SEARCH_RANGE_SEC
     
@@ -151,7 +159,7 @@ def run_fine_stage(sRef, sShift, fs, current_offset):
     if abs(current_offset) > max_offset_sec:
         print(f"  [Fine] WARNING: Coarse offset {current_offset:.1f}s exceeds max reasonable offset ({max_offset_sec:.0f}s).")
         print(f"  [Fine] Skipping fine search - files may be corrupted or mismatched.")
-        return current_offset
+        return current_offset, None
     
     # 1. Slice Data from Reference
     mid_idx = len(sRef) // 2
@@ -169,13 +177,13 @@ def run_fine_stage(sRef, sShift, fs, current_offset):
     if start_Shift_wide < 0 or end_Shift_wide > len(sShift):
         print(f"  [Fine] WARNING: Shift window out of bounds (start={start_Shift_wide}, end={end_Shift_wide}, len={len(sShift)}).")
         print(f"  [Fine] Skipping fine search - coarse offset may be incorrect.")
-        return current_offset
+        return current_offset, None
     
     chunkShift_wide = sShift[max(0, start_Shift_wide):min(len(sShift), end_Shift_wide)]
     
     if len(chunkRef) < fs or len(chunkShift_wide) < fs:
         print("  [Fine] Window too short, skipping.")
-        return current_offset
+        return current_offset, None
 
     # compute features
     print("  [Fine] Computing spectrogram features...")
@@ -191,13 +199,18 @@ def run_fine_stage(sRef, sShift, fs, current_offset):
     
     if search_len <= 0:
         print(f"  [Fine] No search range available (search_len={search_len}), skipping.")
-        return current_offset
+        return current_offset, None
     
     print(f"  [Fine] Searching {search_len} positions...")
     
     best_mi = -1
     best_local_lag = 0
     start_time = time.time()
+    
+    # Store search results for plotting (subsample for efficiency)
+    lags_ms = []
+    scores = []
+    subsample_step = max(1, search_len // 500)  # Keep at most ~500 points for plotting
     
     for i in range(search_len):
         # Check timeout periodically
@@ -210,6 +223,15 @@ def run_fine_stage(sRef, sShift, fs, current_offset):
         
         sliceShift = qShift[i : i + len(featRef)]
         score = calc_mi(qRef, sliceShift.ravel(), FINE_BINS)
+        
+        # Store for plotting (subsampled)
+        if i % subsample_step == 0:
+            # Convert local lag to ms relative to coarse offset
+            # Each position is 1 sample = 1/fs seconds
+            lag_offset_sec = (i - margin_samp) / fs  # Offset from coarse position
+            lags_ms.append(lag_offset_sec * 1000)  # Convert to ms
+            scores.append(score)
+        
         if score > best_mi:
             best_mi = score
             best_local_lag = i
@@ -217,8 +239,17 @@ def run_fine_stage(sRef, sShift, fs, current_offset):
     best_start_Shift_global = start_Shift_wide + best_local_lag
     final_offset = (best_start_Shift_global - start_Ref) / fs
     
+    # Calculate best lag in ms relative to coarse offset
+    best_lag_offset_ms = (best_local_lag - margin_samp) / fs * 1000
+    
+    fine_search_data = {
+        'lags_ms': lags_ms,
+        'scores': scores,
+        'best_lag_ms': best_lag_offset_ms
+    }
+    
     print(f"  [Fine search] offset: {final_offset:.5f} s (MI={best_mi:.4f})")
-    return final_offset
+    return final_offset, fine_search_data
 
 def syncerpy(file_reference, file_shift, channel_reference=None, channel_shift=None,
              cut_files=False, plot=False, output_folder=None, fs=64, prefix=None):
@@ -274,7 +305,7 @@ def syncerpy(file_reference, file_shift, channel_reference=None, channel_shift=N
     # 2. Calculate offset
     offset, coarse_corr, coarse_lags = run_coarse_stage(sRef, sShift, fs)
     coarse_offset = offset  # Save for diagnostics
-    offset = run_fine_stage(sRef, sShift, fs, offset)
+    offset, fine_search_data = run_fine_stage(sRef, sShift, fs, offset)
     
     # Check if offset is reasonable
     max_offset_sec = MAX_REASONABLE_OFFSET_HOURS * 3600
@@ -415,13 +446,16 @@ def syncerpy(file_reference, file_shift, channel_reference=None, channel_shift=N
             sig_shift_cut = shift_data[0]
             sig_ref_cut = (sig_ref_cut - np.mean(sig_ref_cut)) / (np.std(sig_ref_cut) + EPSILON)
             sig_shift_cut = (sig_shift_cut - np.mean(sig_shift_cut)) / (np.std(sig_shift_cut) + EPSILON)
+            # Cut signals are at original file sample rates
+            fs_ref_cut = ref_signal_headers[0].get('sample_frequency', ref_signal_headers[0].get('sample_rate'))
+            fs_shift_cut = shift_signal_headers[0].get('sample_frequency', shift_signal_headers[0].get('sample_rate'))
         else:
             # Use raw signals (already normalized) for diagnostic plot
             sig_ref_cut = sRef
             sig_shift_cut = sShift
-        
-        fs_ref = ref_signal_headers[0].get('sample_frequency', ref_signal_headers[0].get('sample_rate'))
-        fs_shift = shift_signal_headers[0].get('sample_frequency', shift_signal_headers[0].get('sample_rate'))
+            # These are at the resampled rate
+            fs_ref_cut = fs
+            fs_shift_cut = fs
         
         # Add FAILED to filename if alignment was suspicious
         if offset_is_suspicious:
@@ -437,13 +471,15 @@ def syncerpy(file_reference, file_shift, channel_reference=None, channel_shift=N
             sShift_raw=sShift,
             sRef_cut=sig_ref_cut,
             sShift_cut=sig_shift_cut,
-            fs_ref=fs_ref,
-            fs_shift=fs_shift,
+            fs_raw=fs,  # Raw signals are at the resampled rate (64Hz)
+            fs_ref_cut=fs_ref_cut,
+            fs_shift_cut=fs_shift_cut,
             offset_sec=offset,
-            name_ref=file_reference.name,
-            name_shift=file_shift.name,
+            name_ref=file_reference.stem,  # Use stem (filename without extension)
+            name_shift=file_shift.stem,
             coarse_corr=coarse_corr,
             coarse_lags=coarse_lags,
+            fine_search_data=fine_search_data,
             plot_win_sec=PLOT_WIN_SEC,
             plot_overlap_divisor=PLOT_OVERLAP_DIVISOR,
             plot_max_freq=PLOT_MAX_FREQ,

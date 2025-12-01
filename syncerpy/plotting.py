@@ -2,19 +2,69 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy import signal
 from lspopt import spectrogram_lspopt
+from pathlib import Path
 
-def plot_results(sA, sB, fs, offset_sec, name_a, name_b, coarse_corr=None, coarse_lags=None,
-                 plot_win_sec=30, plot_overlap_divisor=4, plot_max_freq=30, save_path=None, fsB=None, show_plot=False):
+
+def _get_filename(name_or_path):
+    """Extract just the filename (stem) from a path or name."""
+    return Path(name_or_path).stem
+
+
+def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
+                           fs_raw, fs_ref_cut, fs_shift_cut, offset_sec,
+                           name_ref, name_shift,
+                           coarse_corr=None, coarse_lags=None,
+                           fine_search_data=None,
+                           plot_win_sec=30, plot_overlap_divisor=4, plot_max_freq=20,
+                           save_path=None, show_plot=False, is_failed=False):
+    """
+    Creates a comprehensive 2x3 plot showing alignment analysis.
     
-    if fsB is None:
-        fsB = fs
-
+    Layout:
+        Left Column:                    Right Column:
+        +-----------------------+       +-----------------------+
+        | Unaligned TFRs        |       | Full Aligned TFRs     |
+        | (both from t=0)       |       |                       |
+        +-----------------------+       +-----------------------+
+        | Coarse Cross-Corr     |       | Zoomed View 1         |
+        |                       |       | (30 min from middle)  |
+        +-----------------------+       +-----------------------+
+        | Fine Search Results   |       | Zoomed View 2         |
+        |                       |       | (30 min from 2nd half)|
+        +-----------------------+       +-----------------------+
+    
+    Parameters:
+    -----------
+    sRef_raw, sShift_raw : array
+        Raw (unaligned) signals at fs_raw
+    sRef_cut, sShift_cut : array
+        Aligned/cut signals at fs_ref_cut and fs_shift_cut respectively
+    fs_raw : float
+        Sample rate for raw signals (typically 64Hz after resampling)
+    fs_ref_cut, fs_shift_cut : float
+        Sample rates for cut signals
+    offset_sec : float
+        Computed offset in seconds
+    name_ref, name_shift : str
+        Names/paths of the files (will extract just filename)
+    coarse_corr, coarse_lags : array
+        Coarse cross-correlation results
+    fine_search_data : dict, optional
+        Contains 'lags_ms', 'scores', 'best_lag_ms' for fine search plot
+    is_failed : bool
+        If True, adds a warning banner indicating alignment failed
+    """
+    
+    # Extract just filenames
+    name_ref = _get_filename(name_ref)
+    name_shift = _get_filename(name_shift)
+    
     # Plot configuration
     TITLE_FONT_SIZE = 16
-    LABEL_FONT_SIZE = 14
-    TICK_FONT_SIZE = 14
-    LEGEND_FONT_SIZE = 14
-    ANNOTATION_FONT_SIZE = 16
+    LABEL_FONT_SIZE = 10
+    TICK_FONT_SIZE = 9
+    ANNOTATION_FONT_SIZE = 9
+    LEGEND_FONT_SIZE = 9
 
     def get_spec(sig, fs_local):
         win = int(plot_win_sec * fs_local)
@@ -22,130 +72,12 @@ def plot_results(sA, sB, fs, offset_sec, name_a, name_b, coarse_corr=None, coars
         f, t, S = spectrogram_lspopt(sig, fs_local, nperseg=win, noverlap=overlap)
         return f[f<=plot_max_freq], t, 10*np.log10(S[f<=plot_max_freq])
 
-    fA, tA, SA = get_spec(sA, fs)
-    fB, tB, SB = get_spec(sB, fsB)
+    # Calculate all spectrograms
+    # Raw signals use fs_raw (resampled rate, e.g. 64Hz)
+    fR_raw, tR_raw, SR_raw = get_spec(sRef_raw, fs_raw)
+    fS_raw, tS_raw, SS_raw = get_spec(sShift_raw, fs_raw)
     
-    tB_shift = tB + offset_sec
-
-    # Determine global time range
-    t_min = min(tA.min(), tB_shift.min())
-    t_max = max(tA.max(), tB_shift.max())
-
-    # Robust normalization using Median and IQR
-    def get_robust_lims(S):
-        q25, q50, q75 = np.percentile(S, [25, 50, 75])
-        iqr = q75 - q25
-        vmin = q50 - 1.5 * iqr
-        vmax = q50 + 1.5 * iqr
-        return vmin, vmax
-
-    vmin_A, vmax_A = get_robust_lims(SA)
-    vmin_B, vmax_B = get_robust_lims(SB)
-
-    fig = plt.figure(figsize=(16,12))
-    plt.suptitle(f"Computed offset: {offset_sec*1000:.2f} ms ", fontsize=16)
-
-    # Create a layout where the first two plots touch
-    gs = fig.add_gridspec(2, 1, height_ratios=[2, 1], hspace=0.3)
-    gs_top = gs[0].subgridspec(2, 1, hspace=0.0)
-    
-    ax1 = fig.add_subplot(gs_top[0])
-    ax2 = fig.add_subplot(gs_top[1])
-    ax3 = fig.add_subplot(gs[1])
-
-    # Plot 1
-    ax1.pcolormesh(tA/3600, fA, SA, shading="auto", cmap="Spectral_r", vmin=vmin_A, vmax=vmax_A)
-    ax1.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
-    ax1.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
-    ax1.tick_params(labelbottom=False)
-    ax1.text(1.02, 0.5, "reference", transform=ax1.transAxes, rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
-
-    # Plot 2
-    ax2.pcolormesh(tB_shift/3600, fB, SB, shading="auto", cmap="Spectral_r", vmin=vmin_B, vmax=vmax_B)
-    ax2.invert_yaxis() # Flip so 0Hz is at top (touching 0Hz of ax1)
-    ax2.text(1.02, 0.5, "shifted", transform=ax2.transAxes, rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
-        
-    ax2.set_xlabel("Hours", fontsize=LABEL_FONT_SIZE)
-    ax2.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
-    ax2.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
-
-    xmin = t_min / 3600
-    xmax = t_max / 3600
-    
-    # Sync x-axis for spectrograms
-    ax1.set_xlim(xmin, xmax)
-    ax2.set_xlim(xmin, xmax)
-
-    # 3. Coarse Correlation Distribution
-    if coarse_corr is not None and coarse_lags is not None:
-        plt.sca(ax3)
-        plt.plot(coarse_lags, coarse_corr, color='blue', linewidth=1)
-        
-        # Mark max correlation
-        max_idx = np.argmax(coarse_corr)
-        max_val = coarse_corr[max_idx]
-        max_lag = coarse_lags[max_idx]
-        plt.plot(max_lag, np.min(coarse_corr), marker='^', color='red', markersize=10, label=f'Max: {max_lag:.1f}s', linestyle='None')
-        
-        # Peak-to-next-peak ratio
-        peaks, _ = signal.find_peaks(coarse_corr, distance=10)
-        
-        peak_vals = coarse_corr[peaks]
-        # Sort descending
-        sorted_indices = np.argsort(peak_vals)[::-1]
-        sorted_peaks = peak_vals[sorted_indices]
-        
-        ratio_text = "Ratio: N/A"
-        if len(sorted_peaks) >= 2:
-            p1 = sorted_peaks[0]
-            p2 = sorted_peaks[1]
-            if p2 > 0:
-                ratio = p1 / p2
-                ratio_text = f"Peak Ratio: {ratio:.2f}"
-            else:
-                ratio_text = "Peak Ratio: > 2nd peak <= 0"
-        elif len(sorted_peaks) == 1:
-                ratio_text = "Peak Ratio: Single Peak"
-        
-        plt.xlabel("Lag (seconds)", fontsize=LABEL_FONT_SIZE)
-        plt.ylabel("Correlation", fontsize=LABEL_FONT_SIZE)
-        plt.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
-        plt.legend(fontsize=LEGEND_FONT_SIZE)
-        plt.grid(True, alpha=0.3)
-
-    plt.subplots_adjust(right=0.9)
-    
-    if save_path:
-        plt.savefig(save_path)
-        print(f"[Plotting] Saved plot to {save_path}")
-        
-    if show_plot:
-        plt.show()
-    else:
-        plt.close(fig)
-        
-    return fig
-
-def plot_combined_spectrograms(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
-                               fs_ref_raw, fs_shift_raw, fs_ref_cut, fs_shift_cut,
-                               name_ref, name_shift, title="Combined Spectrograms",
-                               plot_win_sec=30, plot_overlap_divisor=4, plot_max_freq=30,
-                               save_path=None, show_plot=False):
-    
-    # Plot configuration
-    LABEL_FONT_SIZE = 12
-    TICK_FONT_SIZE = 10
-    ANNOTATION_FONT_SIZE = 12
-
-    def get_spec(sig, fs_local):
-        win = int(plot_win_sec * fs_local)
-        overlap = plot_win_sec / plot_overlap_divisor
-        f, t, S = spectrogram_lspopt(sig, fs_local, nperseg=win, noverlap=overlap)
-        return f[f<=plot_max_freq], t, 10*np.log10(S[f<=plot_max_freq])
-
-    # Calculate spectrograms
-    fR_raw, tR_raw, SR_raw = get_spec(sRef_raw, fs_ref_raw)
-    fS_raw, tS_raw, SS_raw = get_spec(sShift_raw, fs_shift_raw)
+    # Cut signals use their respective sample rates
     fR_cut, tR_cut, SR_cut = get_spec(sRef_cut, fs_ref_cut)
     fS_cut, tS_cut, SS_cut = get_spec(sShift_cut, fs_shift_cut)
 
@@ -162,214 +94,11 @@ def plot_combined_spectrograms(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
     vmin_Rc, vmax_Rc = get_robust_lims(SR_cut)
     vmin_Sc, vmax_Sc = get_robust_lims(SS_cut)
 
-    fig = plt.figure(figsize=(16, 16))
-    plt.suptitle(title, fontsize=16)
-
-    # Create outer grid for 2 groups (Raw vs Cut)
-    gs_outer = fig.add_gridspec(2, 1, hspace=0.3)
-    
-    # Group 1: Raw
-    gs_raw = gs_outer[0].subgridspec(2, 1, hspace=0.0)
-    ax1 = fig.add_subplot(gs_raw[0])
-    ax2 = fig.add_subplot(gs_raw[1])
-    
-    # Group 2: Cut
-    gs_cut = gs_outer[1].subgridspec(2, 1, hspace=0.0)
-    ax3 = fig.add_subplot(gs_cut[0])
-    ax4 = fig.add_subplot(gs_cut[1])
-
-    # --- Raw Plots ---
-    t_max_raw = max(tR_raw.max(), tS_raw.max())
-    
-    # Set background to red for "empty space"
-    ax1.set_facecolor('red')
-    ax2.set_facecolor('red')
-
-    # Plot 1 (Ref Raw)
-    ax1.pcolormesh(tR_raw/3600, fR_raw, SR_raw, shading="auto", cmap="Spectral_r", vmin=vmin_Rr, vmax=vmax_Rr)
-    ax1.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
-    ax1.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
-    ax1.tick_params(labelbottom=False) # Hide x-labels
-    ax1.set_xlim(0, t_max_raw/3600)
-    # Annotation
-    ax1.text(1.02, 0.5, f"{name_ref} (Raw)", transform=ax1.transAxes, rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
-
-    # Plot 2 (Shift Raw)
-    ax2.pcolormesh(tS_raw/3600, fS_raw, SS_raw, shading="auto", cmap="Spectral_r", vmin=vmin_Sr, vmax=vmax_Sr)
-    ax2.invert_yaxis() # Mirror
-    ax2.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
-    ax2.set_xlabel("Hours", fontsize=LABEL_FONT_SIZE)
-    ax2.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
-    ax2.set_xlim(0, t_max_raw/3600)
-    # Annotation
-    ax2.text(1.02, 0.5, f"{name_shift} (Raw)", transform=ax2.transAxes, rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
-
-    # --- Cut Plots ---
-    t_max_cut = max(tR_cut.max(), tS_cut.max())
-
-    # Plot 3 (Ref Cut)
-    ax3.pcolormesh(tR_cut/3600, fR_cut, SR_cut, shading="auto", cmap="Spectral_r", vmin=vmin_Rc, vmax=vmax_Rc)
-    ax3.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
-    ax3.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
-    ax3.tick_params(labelbottom=False) # Hide x-labels
-    ax3.set_xlim(0, t_max_cut/3600)
-    # Annotation
-    ax3.text(1.02, 0.5, f"{name_ref} (Aligned)", transform=ax3.transAxes, rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
-
-    # Plot 4 (Shift Cut)
-    ax4.pcolormesh(tS_cut/3600, fS_cut, SS_cut, shading="auto", cmap="Spectral_r", vmin=vmin_Sc, vmax=vmax_Sc)
-    ax4.invert_yaxis() # Mirror
-    ax4.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
-    ax4.set_xlabel("Hours", fontsize=LABEL_FONT_SIZE)
-    ax4.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
-    ax4.set_xlim(0, t_max_cut/3600)
-    # Annotation
-    ax4.text(1.02, 0.5, f"{name_shift} (Aligned)", transform=ax4.transAxes, rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
-
-    plt.subplots_adjust(right=0.9)
-
-    if save_path:
-        plt.savefig(save_path)
-        print(f"[Plotting] Saved combined spectrogram plot to {save_path}")
-        
-    if show_plot:
-        plt.show()
-    else:
-        plt.close(fig)
-        
-    return fig
-
-def plot_spectrograms(sA, sB, fs, name_a, name_b, title="Spectrograms",
-                      plot_win_sec=30, plot_overlap_divisor=4, plot_max_freq=30,
-                      save_path=None, fsB=None, show_plot=False):
-    
-    if fsB is None:
-        fsB = fs
-
-    # Plot configuration
-    LABEL_FONT_SIZE = 14
-    TICK_FONT_SIZE = 14
-    ANNOTATION_FONT_SIZE = 16
-
-    def get_spec(sig, fs_local):
-        win = int(plot_win_sec * fs_local)
-        overlap = plot_win_sec / plot_overlap_divisor
-        f, t, S = spectrogram_lspopt(sig, fs_local, nperseg=win, noverlap=overlap)
-        return f[f<=plot_max_freq], t, 10*np.log10(S[f<=plot_max_freq])
-
-    fA, tA, SA = get_spec(sA, fs)
-    fB, tB, SB = get_spec(sB, fsB)
-    
-    # Robust normalization
-    def get_robust_lims(S):
-        q25, q50, q75 = np.percentile(S, [25, 50, 75])
-        iqr = q75 - q25
-        vmin = q50 - 1.5 * iqr
-        vmax = q50 + 1.5 * iqr
-        return vmin, vmax
-
-    vmin_A, vmax_A = get_robust_lims(SA)
-    vmin_B, vmax_B = get_robust_lims(SB)
-
-    fig = plt.figure(figsize=(16, 8))
-    plt.suptitle(title, fontsize=16)
-
-    # Create a layout where the two plots touch
-    gs = fig.add_gridspec(2, 1, hspace=0.0)
-    
-    ax1 = fig.add_subplot(gs[0])
-    ax2 = fig.add_subplot(gs[1])
-
-    # Plot 1
-    ax1.pcolormesh(tA/3600, fA, SA, shading="auto", cmap="Spectral_r", vmin=vmin_A, vmax=vmax_A)
-    ax1.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
-    ax1.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
-    ax1.tick_params(labelbottom=False)
-    ax1.text(1.02, 0.5, name_a, transform=ax1.transAxes, rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
-
-    # Plot 2
-    ax2.pcolormesh(tB/3600, fB, SB, shading="auto", cmap="Spectral_r", vmin=vmin_B, vmax=vmax_B)
-    ax2.invert_yaxis() # Flip so 0Hz is at top (touching 0Hz of ax1)
-    ax2.text(1.02, 0.5, name_b, transform=ax2.transAxes, rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
-        
-    ax2.set_xlabel("Hours", fontsize=LABEL_FONT_SIZE)
-    ax2.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
-    ax2.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
-
-    # Sync x-axis
-    t_max = max(tA.max(), tB.max())
-    ax1.set_xlim(0, t_max/3600)
-    ax2.set_xlim(0, t_max/3600)
-
-    plt.subplots_adjust(right=0.9)
-    
-    if save_path:
-        plt.savefig(save_path)
-        print(f"[Plotting] Saved spectrogram plot to {save_path}")
-        
-    if show_plot:
-        plt.show()
-    else:
-        plt.close(fig)
-        
-    return fig
-
-def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
-                           fs_ref, fs_shift, offset_sec,
-                           name_ref, name_shift,
-                           coarse_corr=None, coarse_lags=None,
-                           plot_win_sec=30, plot_overlap_divisor=4, plot_max_freq=30,
-                           save_path=None, show_plot=False, is_failed=False):
-    """
-    Creates a single comprehensive plot showing:
-    1. Unaligned (raw) TFRs (mirrored)
-    2. Aligned (cut) TFRs (mirrored)
-    3. Correlation plot
-    
-    Parameters:
-    -----------
-    is_failed : bool
-        If True, adds a warning banner indicating alignment failed
-    """
-    
-    # Plot configuration
-    TITLE_FONT_SIZE = 16
-    LABEL_FONT_SIZE = 12
-    TICK_FONT_SIZE = 10
-    ANNOTATION_FONT_SIZE = 12
-    LEGEND_FONT_SIZE = 12
-
-    def get_spec(sig, fs_local):
-        win = int(plot_win_sec * fs_local)
-        overlap = plot_win_sec / plot_overlap_divisor
-        f, t, S = spectrogram_lspopt(sig, fs_local, nperseg=win, noverlap=overlap)
-        return f[f<=plot_max_freq], t, 10*np.log10(S[f<=plot_max_freq])
-
-    # Calculate all spectrograms
-    fR_raw, tR_raw, SR_raw = get_spec(sRef_raw, fs_ref)
-    fS_raw, tS_raw, SS_raw = get_spec(sShift_raw, fs_shift)
-    fR_cut, tR_cut, SR_cut = get_spec(sRef_cut, fs_ref)
-    fS_cut, tS_cut, SS_cut = get_spec(sShift_cut, fs_shift)
-
-    # Robust normalization
-    def get_robust_lims(S):
-        q25, q50, q75 = np.percentile(S, [25, 50, 75])
-        iqr = q75 - q25
-        vmin = q50 - 1.5 * iqr
-        vmax = q50 + 1.5 * iqr
-        return vmin, vmax
-
-    vmin_Rr, vmax_Rr = get_robust_lims(SR_raw)
-    vmin_Sr, vmax_Sr = get_robust_lims(SS_raw)
-    vmin_Rc, vmax_Rc = get_robust_lims(SR_cut)
-    vmin_Sc, vmax_Sc = get_robust_lims(SS_cut)
-
-    # Create figure with 3 sections: Raw TFRs, Aligned TFRs, Correlation
-    fig = plt.figure(figsize=(16, 18))
+    # Create figure with 2 columns, 3 rows
+    fig = plt.figure(figsize=(20, 16))
     
     # Title with failure warning if applicable
     if is_failed:
-        # Format large offset nicely
         if abs(offset_sec) >= 3600:
             offset_str = f"{offset_sec/3600:.2f} hours"
         elif abs(offset_sec) >= 60:
@@ -377,120 +106,226 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
         else:
             offset_str = f"{offset_sec:.2f} s"
         title = f"⚠️ ALIGNMENT FAILED - Offset: {offset_str} (suspicious)"
-        plt.suptitle(title, fontsize=TITLE_FONT_SIZE, color='red', fontweight='bold')
+        plt.suptitle(title, fontsize=TITLE_FONT_SIZE, color='red', fontweight='bold', y=0.98)
         
-        # Add warning text box
-        fig.text(0.5, 0.94,
-                "Files may be corrupted, mismatched, or from different recordings.\n"
-                "The computed offset is unreasonably large. Manual inspection recommended.",
-                ha='center', va='top', fontsize=11,
+        fig.text(0.5, 0.96,
+                "Files may be corrupted, mismatched, or from different recordings.",
+                ha='center', va='top', fontsize=10,
                 color='darkred', style='italic',
                 bbox=dict(boxstyle='round', facecolor='lightyellow', edgecolor='red', alpha=0.8))
     else:
-        plt.suptitle(f"Alignment Analysis - Computed offset: {offset_sec*1000:.2f} ms", fontsize=TITLE_FONT_SIZE)
+        plt.suptitle(f"Alignment Analysis - Computed offset: {offset_sec*1000:.2f} ms", 
+                     fontsize=TITLE_FONT_SIZE, y=0.98)
 
-    # Create outer grid: 3 rows (Raw, Aligned, Correlation)
-    gs_outer = fig.add_gridspec(3, 1, height_ratios=[2, 2, 1], hspace=0.35)
+    # Create 3x2 grid
+    gs = fig.add_gridspec(3, 2, height_ratios=[2, 1, 1], width_ratios=[1, 1], 
+                          hspace=0.35, wspace=0.20, left=0.05, right=0.92, top=0.93, bottom=0.05)
     
-    # Section 1: Raw (Unaligned) TFRs
-    gs_raw = gs_outer[0].subgridspec(2, 1, hspace=0.0)
-    ax1 = fig.add_subplot(gs_raw[0])
-    ax2 = fig.add_subplot(gs_raw[1])
+    # ----- LEFT COLUMN -----
     
-    # Section 2: Aligned (Cut) TFRs
-    gs_cut = gs_outer[1].subgridspec(2, 1, hspace=0.0)
-    ax3 = fig.add_subplot(gs_cut[0])
-    ax4 = fig.add_subplot(gs_cut[1])
+    # Row 0 Left: Unaligned TFRs (mirrored pair)
+    gs_raw = gs[0, 0].subgridspec(2, 1, hspace=0.0)
+    ax_raw_top = fig.add_subplot(gs_raw[0])
+    ax_raw_bot = fig.add_subplot(gs_raw[1])
     
-    # Section 3: Correlation plot
-    ax5 = fig.add_subplot(gs_outer[2])
-
-    # --- Raw (Unaligned) Plots ---
+    # Row 1 Left: Coarse correlation
+    ax_coarse = fig.add_subplot(gs[1, 0])
+    
+    # Row 2 Left: Fine search results
+    ax_fine = fig.add_subplot(gs[2, 0])
+    
+    # ----- RIGHT COLUMN -----
+    
+    # Row 0 Right: Full Aligned TFRs (mirrored pair)
+    gs_aligned = gs[0, 1].subgridspec(2, 1, hspace=0.0)
+    ax_aligned_top = fig.add_subplot(gs_aligned[0])
+    ax_aligned_bot = fig.add_subplot(gs_aligned[1])
+    
+    # Row 1 Right: Zoomed view 1 (mirrored pair)
+    gs_zoom1 = gs[1, 1].subgridspec(2, 1, hspace=0.0)
+    ax_zoom1_top = fig.add_subplot(gs_zoom1[0])
+    ax_zoom1_bot = fig.add_subplot(gs_zoom1[1])
+    
+    # Row 2 Right: Zoomed view 2 (mirrored pair)
+    gs_zoom2 = gs[2, 1].subgridspec(2, 1, hspace=0.0)
+    ax_zoom2_top = fig.add_subplot(gs_zoom2[0])
+    ax_zoom2_bot = fig.add_subplot(gs_zoom2[1])
+    
+    # ===== PLOT LEFT COLUMN =====
+    
+    # --- Unaligned TFRs ---
     t_max_raw = max(tR_raw.max(), tS_raw.max())
+    ax_raw_top.set_facecolor('#ffcccc')  # Light red for empty space
+    ax_raw_bot.set_facecolor('#ffcccc')
     
-    # Set background to red for "empty space"
-    ax1.set_facecolor('red')
-    ax2.set_facecolor('red')
+    # Top: Reference raw
+    ax_raw_top.pcolormesh(tR_raw/3600, fR_raw, SR_raw, shading="auto", 
+                          cmap="Spectral_r", vmin=vmin_Rr, vmax=vmax_Rr)
+    ax_raw_top.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
+    ax_raw_top.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
+    ax_raw_top.tick_params(labelbottom=False)
+    ax_raw_top.set_xlim(0, t_max_raw/3600)
+    ax_raw_top.set_ylim(0, plot_max_freq)
+    ax_raw_top.text(1.02, 0.5, f"{name_ref} (REF)", transform=ax_raw_top.transAxes, 
+                    rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
+    ax_raw_top.set_title("Unaligned (Raw) TFRs", fontsize=LABEL_FONT_SIZE, pad=5)
+    
+    # Bottom: Shift raw (mirrored)
+    ax_raw_bot.pcolormesh(tS_raw/3600, fS_raw, SS_raw, shading="auto", 
+                          cmap="Spectral_r", vmin=vmin_Sr, vmax=vmax_Sr)
+    ax_raw_bot.invert_yaxis()
+    ax_raw_bot.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
+    ax_raw_bot.set_xlabel("Hours", fontsize=LABEL_FONT_SIZE)
+    ax_raw_bot.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
+    ax_raw_bot.set_xlim(0, t_max_raw/3600)
+    ax_raw_bot.set_ylim(plot_max_freq, 0)  # Inverted
+    ax_raw_bot.text(1.02, 0.5, f"{name_shift} (SHIFTED)", transform=ax_raw_bot.transAxes, 
+                    rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
 
-    # Plot 1 (Ref Raw)
-    ax1.pcolormesh(tR_raw/3600, fR_raw, SR_raw, shading="auto", cmap="Spectral_r", vmin=vmin_Rr, vmax=vmax_Rr)
-    ax1.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
-    ax1.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
-    ax1.tick_params(labelbottom=False)
-    ax1.set_xlim(0, t_max_raw/3600)
-    ax1.text(1.02, 0.5, f"{name_ref} (Unaligned)", transform=ax1.transAxes, rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
-    ax1.set_title("Unaligned TFRs", fontsize=LABEL_FONT_SIZE, pad=10)
-
-    # Plot 2 (Shift Raw)
-    ax2.pcolormesh(tS_raw/3600, fS_raw, SS_raw, shading="auto", cmap="Spectral_r", vmin=vmin_Sr, vmax=vmax_Sr)
-    ax2.invert_yaxis()
-    ax2.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
-    ax2.set_xlabel("Hours", fontsize=LABEL_FONT_SIZE)
-    ax2.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
-    ax2.set_xlim(0, t_max_raw/3600)
-    ax2.text(1.02, 0.5, f"{name_shift} (Unaligned)", transform=ax2.transAxes, rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
-
-    # --- Aligned (Cut) Plots ---
-    t_max_cut = max(tR_cut.max(), tS_cut.max())
-
-    # Plot 3 (Ref Cut)
-    ax3.pcolormesh(tR_cut/3600, fR_cut, SR_cut, shading="auto", cmap="Spectral_r", vmin=vmin_Rc, vmax=vmax_Rc)
-    ax3.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
-    ax3.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
-    ax3.tick_params(labelbottom=False)
-    ax3.set_xlim(0, t_max_cut/3600)
-    ax3.text(1.02, 0.5, f"{name_ref} (Aligned)", transform=ax3.transAxes, rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
-    if is_failed:
-        ax3.set_title("Raw Signals (alignment failed - no cutting performed)", fontsize=LABEL_FONT_SIZE, pad=10, color='red')
-    else:
-        ax3.set_title("Aligned & Cut TFRs", fontsize=LABEL_FONT_SIZE, pad=10)
-
-    # Plot 4 (Shift Cut)
-    ax4.pcolormesh(tS_cut/3600, fS_cut, SS_cut, shading="auto", cmap="Spectral_r", vmin=vmin_Sc, vmax=vmax_Sc)
-    ax4.invert_yaxis()
-    ax4.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
-    ax4.set_xlabel("Hours", fontsize=LABEL_FONT_SIZE)
-    ax4.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
-    ax4.set_xlim(0, t_max_cut/3600)
-    ax4.text(1.02, 0.5, f"{name_shift} (Aligned)", transform=ax4.transAxes, rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
-
-    # --- Correlation Plot ---
+    # --- Coarse Correlation Plot ---
     if coarse_corr is not None and coarse_lags is not None:
-        ax5.plot(coarse_lags, coarse_corr, color='blue', linewidth=1)
+        ax_coarse.plot(coarse_lags, coarse_corr, color='blue', linewidth=0.8)
         
         # Mark max correlation
         max_idx = np.argmax(coarse_corr)
-        max_val = coarse_corr[max_idx]
         max_lag = coarse_lags[max_idx]
-        ax5.plot(max_lag, np.min(coarse_corr), marker='^', color='red', markersize=10, label=f'Max: {max_lag:.1f}s', linestyle='None')
+        ax_coarse.axvline(max_lag, color='red', linestyle='--', linewidth=1, alpha=0.7)
+        ax_coarse.plot(max_lag, coarse_corr[max_idx], marker='o', color='red', markersize=6, 
+                       label=f'Max: {max_lag:.1f}s', zorder=5)
         
-        # Peak-to-next-peak ratio
-        peaks, _ = signal.find_peaks(coarse_corr, distance=10)
-        
-        peak_vals = coarse_corr[peaks]
-        sorted_indices = np.argsort(peak_vals)[::-1]
-        sorted_peaks = peak_vals[sorted_indices]
-        
-        ratio_text = "Ratio: N/A"
-        if len(sorted_peaks) >= 2:
-            p1 = sorted_peaks[0]
-            p2 = sorted_peaks[1]
-            if p2 > 0:
-                ratio = p1 / p2
-                ratio_text = f"Peak Ratio: {ratio:.2f}"
-            else:
-                ratio_text = "Peak Ratio: > 2nd peak <= 0"
-        elif len(sorted_peaks) == 1:
-            ratio_text = "Peak Ratio: Single Peak"
-        
-        ax5.set_xlabel("Lag (seconds)", fontsize=LABEL_FONT_SIZE)
-        ax5.set_ylabel("Correlation", fontsize=LABEL_FONT_SIZE)
-        ax5.set_title("Cross-Correlation", fontsize=LABEL_FONT_SIZE, pad=10)
-        ax5.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
-        ax5.legend(fontsize=LEGEND_FONT_SIZE)
-        ax5.grid(True, alpha=0.3)
+        ax_coarse.set_xlabel("Lag (seconds)", fontsize=LABEL_FONT_SIZE)
+        ax_coarse.set_ylabel("Correlation", fontsize=LABEL_FONT_SIZE)
+        ax_coarse.set_title("Coarse Cross-Correlation", fontsize=LABEL_FONT_SIZE, pad=5)
+        ax_coarse.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
+        ax_coarse.legend(fontsize=LEGEND_FONT_SIZE, loc='upper right')
+        ax_coarse.grid(True, alpha=0.3)
+    else:
+        ax_coarse.text(0.5, 0.5, "No coarse correlation data", ha='center', va='center', 
+                       transform=ax_coarse.transAxes, fontsize=LABEL_FONT_SIZE)
+        ax_coarse.set_title("Coarse Cross-Correlation", fontsize=LABEL_FONT_SIZE, pad=5)
 
-    plt.subplots_adjust(right=0.9)
+    # --- Fine Search Results Plot ---
+    if fine_search_data is not None:
+        lags_ms = fine_search_data.get('lags_ms', [])
+        scores = fine_search_data.get('scores', [])
+        best_lag_ms = fine_search_data.get('best_lag_ms', None)
+        
+        if len(lags_ms) > 0 and len(scores) > 0:
+            ax_fine.plot(lags_ms, scores, color='green', linewidth=0.8)
+            if best_lag_ms is not None:
+                best_idx = np.argmin(np.abs(np.array(lags_ms) - best_lag_ms))
+                if best_idx < len(scores):
+                    ax_fine.axvline(best_lag_ms, color='red', linestyle='--', linewidth=1, alpha=0.7)
+                    ax_fine.plot(best_lag_ms, scores[best_idx], marker='o', color='red', markersize=6,
+                                label=f'Best: {best_lag_ms:.2f}ms', zorder=5)
+            ax_fine.set_xlabel("Lag (ms)", fontsize=LABEL_FONT_SIZE)
+            ax_fine.set_ylabel("MI Score", fontsize=LABEL_FONT_SIZE)
+            ax_fine.legend(fontsize=LEGEND_FONT_SIZE, loc='upper right')
+            ax_fine.grid(True, alpha=0.3)
+        else:
+            ax_fine.text(0.5, 0.5, "No fine search data available", ha='center', va='center',
+                        transform=ax_fine.transAxes, fontsize=LABEL_FONT_SIZE)
+    else:
+        ax_fine.text(0.5, 0.5, "Fine search data not recorded", ha='center', va='center',
+                    transform=ax_fine.transAxes, fontsize=LABEL_FONT_SIZE, color='gray')
+    ax_fine.set_title("Fine Search Results", fontsize=LABEL_FONT_SIZE, pad=5)
+    ax_fine.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
+    
+    # ===== PLOT RIGHT COLUMN =====
+    
+    # --- Full Aligned TFRs ---
+    t_max_cut = max(tR_cut.max(), tS_cut.max())
+    
+    # Top: Reference cut
+    ax_aligned_top.pcolormesh(tR_cut/3600, fR_cut, SR_cut, shading="auto", 
+                              cmap="Spectral_r", vmin=vmin_Rc, vmax=vmax_Rc)
+    ax_aligned_top.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
+    ax_aligned_top.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
+    ax_aligned_top.tick_params(labelbottom=False)
+    ax_aligned_top.set_xlim(0, t_max_cut/3600)
+    ax_aligned_top.set_ylim(0, plot_max_freq)
+    ax_aligned_top.text(1.02, 0.5, f"{name_ref} (REF)", transform=ax_aligned_top.transAxes, 
+                        rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
+    if is_failed:
+        ax_aligned_top.set_title("Raw Signals (alignment failed)", fontsize=LABEL_FONT_SIZE, 
+                                  pad=5, color='red')
+    else:
+        ax_aligned_top.set_title("Aligned & Cut TFRs (Full)", fontsize=LABEL_FONT_SIZE, pad=5)
+    
+    # Bottom: Shift cut (mirrored)
+    ax_aligned_bot.pcolormesh(tS_cut/3600, fS_cut, SS_cut, shading="auto", 
+                              cmap="Spectral_r", vmin=vmin_Sc, vmax=vmax_Sc)
+    ax_aligned_bot.invert_yaxis()
+    ax_aligned_bot.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
+    ax_aligned_bot.set_xlabel("Hours", fontsize=LABEL_FONT_SIZE)
+    ax_aligned_bot.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
+    ax_aligned_bot.set_xlim(0, t_max_cut/3600)
+    ax_aligned_bot.set_ylim(plot_max_freq, 0)
+    ax_aligned_bot.text(1.02, 0.5, f"{name_shift} (SHIFTED)", transform=ax_aligned_bot.transAxes, 
+                        rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
+
+    # --- Zoomed Views ---
+    # Calculate zoom windows (30 minutes each)
+    zoom_duration_sec = 30 * 60  # 30 minutes in seconds
+    total_cut_sec = t_max_cut
+    
+    # Zoom 1: Middle of recording
+    zoom1_center_sec = total_cut_sec / 2
+    zoom1_start_hr = max(0, (zoom1_center_sec - zoom_duration_sec/2)) / 3600
+    zoom1_end_hr = min(total_cut_sec, (zoom1_center_sec + zoom_duration_sec/2)) / 3600
+    
+    # Zoom 2: Middle of second half
+    zoom2_center_sec = total_cut_sec * 0.75
+    zoom2_start_hr = max(0, (zoom2_center_sec - zoom_duration_sec/2)) / 3600
+    zoom2_end_hr = min(total_cut_sec, (zoom2_center_sec + zoom_duration_sec/2)) / 3600
+    
+    # Plot Zoom 1
+    ax_zoom1_top.pcolormesh(tR_cut/3600, fR_cut, SR_cut, shading="auto", 
+                            cmap="Spectral_r", vmin=vmin_Rc, vmax=vmax_Rc)
+    ax_zoom1_top.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
+    ax_zoom1_top.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
+    ax_zoom1_top.tick_params(labelbottom=False)
+    ax_zoom1_top.set_xlim(zoom1_start_hr, zoom1_end_hr)
+    ax_zoom1_top.set_ylim(0, plot_max_freq)
+    ax_zoom1_top.text(1.02, 0.5, f"{name_ref} (REF)", transform=ax_zoom1_top.transAxes, 
+                      rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
+    ax_zoom1_top.set_title(f"Zoomed: Middle ({zoom1_start_hr:.2f}-{zoom1_end_hr:.2f}h)", 
+                           fontsize=LABEL_FONT_SIZE, pad=5)
+    
+    ax_zoom1_bot.pcolormesh(tS_cut/3600, fS_cut, SS_cut, shading="auto", 
+                            cmap="Spectral_r", vmin=vmin_Sc, vmax=vmax_Sc)
+    ax_zoom1_bot.invert_yaxis()
+    ax_zoom1_bot.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
+    ax_zoom1_bot.set_xlabel("Hours", fontsize=LABEL_FONT_SIZE)
+    ax_zoom1_bot.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
+    ax_zoom1_bot.set_xlim(zoom1_start_hr, zoom1_end_hr)
+    ax_zoom1_bot.set_ylim(plot_max_freq, 0)
+    ax_zoom1_bot.text(1.02, 0.5, f"{name_shift} (SHIFTED)", transform=ax_zoom1_bot.transAxes, 
+                      rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
+    
+    # Plot Zoom 2
+    ax_zoom2_top.pcolormesh(tR_cut/3600, fR_cut, SR_cut, shading="auto", 
+                            cmap="Spectral_r", vmin=vmin_Rc, vmax=vmax_Rc)
+    ax_zoom2_top.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
+    ax_zoom2_top.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
+    ax_zoom2_top.tick_params(labelbottom=False)
+    ax_zoom2_top.set_xlim(zoom2_start_hr, zoom2_end_hr)
+    ax_zoom2_top.set_ylim(0, plot_max_freq)
+    ax_zoom2_top.text(1.02, 0.5, f"{name_ref} (REF)", transform=ax_zoom2_top.transAxes, 
+                      rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
+    ax_zoom2_top.set_title(f"Zoomed: 2nd Half ({zoom2_start_hr:.2f}-{zoom2_end_hr:.2f}h)", 
+                           fontsize=LABEL_FONT_SIZE, pad=5)
+    
+    ax_zoom2_bot.pcolormesh(tS_cut/3600, fS_cut, SS_cut, shading="auto", 
+                            cmap="Spectral_r", vmin=vmin_Sc, vmax=vmax_Sc)
+    ax_zoom2_bot.invert_yaxis()
+    ax_zoom2_bot.set_ylabel("Hz", fontsize=LABEL_FONT_SIZE)
+    ax_zoom2_bot.set_xlabel("Hours", fontsize=LABEL_FONT_SIZE)
+    ax_zoom2_bot.tick_params(axis='both', which='major', labelsize=TICK_FONT_SIZE)
+    ax_zoom2_bot.set_xlim(zoom2_start_hr, zoom2_end_hr)
+    ax_zoom2_bot.set_ylim(plot_max_freq, 0)
+    ax_zoom2_bot.text(1.02, 0.5, f"{name_shift} (SHIFTED)", transform=ax_zoom2_bot.transAxes, 
+                      rotation=90, va='center', ha='left', fontsize=ANNOTATION_FONT_SIZE)
     
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
