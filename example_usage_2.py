@@ -1,7 +1,7 @@
 from pathlib import Path
 from syncerpy.syncerpy import syncerpy, print_channels
 from cutterpy import cut
-
+ 
 # Configuration
 ROOT_SEARCH_DIR = "/mnt/HBS/extra_zmax_data/bitbrain_dataset"
 OUTPUT_DIR = "/mnt/HBS/extra_zmax_data/aligned_bitbrain"  # All synced files will be saved here
