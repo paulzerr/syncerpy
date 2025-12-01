@@ -4,7 +4,8 @@ import pandas as pd
 from pathlib import Path
 from scipy import signal
 import time
-from .plotting import plot_results, plot_spectrograms
+import pyedflib
+from .plotting import plot_complete_alignment
 
 # Configuration Constants
 EPSILON = 1e-12
@@ -185,8 +186,41 @@ def run_fine_stage(sRef, sShift, fs, current_offset):
     return final_offset
 
 def syncerpy(file_reference, file_shift, channel_reference=None, channel_shift=None,
-             plot=False, show_plot=True, save_plot=False, save_correlation_plot=False,
-             output_folder=None, fs=64, prefix=None):
+             cut_files=False, plot=False, output_folder=None, fs=64, prefix=None):
+    """
+    Synchronize two EDF files by calculating the time offset between them.
+    
+    Parameters:
+    -----------
+    file_reference : str
+        Path to the reference EDF file
+    file_shift : str
+        Path to the file to be shifted/aligned
+    channel_reference : str, optional
+        Channel name to use from reference file
+    channel_shift : str, optional
+        Channel name to use from shift file
+    cut_files : bool, default=False
+        If True, creates aligned/cut EDF files and generates combined plot
+        If False, only returns the offset
+    plot : bool, default=False
+        If True, saves the combined alignment plot to disk (never displays it)
+    output_folder : str, optional
+        Directory to save output files (default: same as reference file)
+    fs : int, default=64
+        Sampling frequency to resample to
+    prefix : str, optional
+        Prefix for output filenames
+        
+    Returns:
+    --------
+    If cut_files=False:
+        offset : float
+            Time offset in seconds
+    If cut_files=True:
+        tuple : (out_name_ref, out_name_shift)
+            Paths to the aligned output files
+    """
     t0 = time.time()
     
     file_reference = Path(file_reference)
@@ -198,51 +232,150 @@ def syncerpy(file_reference, file_shift, channel_reference=None, channel_shift=N
         out_dir = file_reference.parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Load
+    # 1. Load signals for alignment calculation
     sRef = load_file(file_reference, fs, channel_reference)
     sShift = load_file(file_shift, fs, channel_shift)
-    
-    # Plot 1: Pre-alignment Spectrograms (Raw files) - DISABLED in favor of combined plot in cutterpy
-    # if save_plot or (plot and show_plot):
-    #     # If we are saving, or if we are showing (which implies generating)
-    #     # Note: The user asked for "save_plot" to control saving. "show_plot" controls showing.
-    #
-    #     # We only save if save_plot is True.
-    #     save_path = None
-    #     if save_plot:
-    #         save_path = out_dir / f"spectrograms_raw_{file_reference.stem}_vs_{file_shift.stem}.png"
-    #
-    #     # We only generate/show if save_plot is True OR show_plot is True
-    #     if save_plot or show_plot:
-    #         plot_spectrograms(sRef, sShift, fs,
-    #                           name_a=f"{file_reference.name} (raw)",
-    #                           name_b=f"{file_shift.name} (raw)",
-    #                           title="Raw Spectrograms (Pre-alignment)",
-    #                           plot_win_sec=PLOT_WIN_SEC,
-    #                           plot_overlap_divisor=PLOT_OVERLAP_DIVISOR,
-    #                           plot_max_freq=PLOT_MAX_FREQ,
-    #                           save_path=str(save_path) if save_path else None,
-    #                           show_plot=show_plot)
 
+    # 2. Calculate offset
     offset, coarse_corr, coarse_lags = run_coarse_stage(sRef, sShift, fs)
     offset = run_fine_stage(sRef, sShift, fs, offset)
     
     print(f"\n{'='*30}\nOFFSET: {offset*1000:.2f} ms\n{'='*30}")
     print(f"Total execution time: {time.time() - t0:.3f} s")
     
-    # Plot 3: Correlation Plot (Existing)
-    if save_correlation_plot or (plot and show_plot):
-        save_path = None
-        if save_correlation_plot:
-            fname = f"correlation_{file_reference.stem}_vs_{file_shift.stem}.png"
-            if prefix:
-                fname = f"{prefix}-{fname}"
-            save_path = out_dir / fname
-            
-        if save_correlation_plot or show_plot:
-            plot_results(sRef, sShift, fs, offset, file_reference.name, file_shift.name, coarse_corr, coarse_lags,
-                         PLOT_WIN_SEC, PLOT_OVERLAP_DIVISOR, PLOT_MAX_FREQ,
-                         save_path=str(save_path) if save_path else None,
-                         show_plot=show_plot)
+    # 3. If cut_files is False, just return the offset
+    if not cut_files:
+        return offset
+    
+    # 4. If cut_files is True, perform the cutting and alignment
+    print(f"[Cutter] Processing {file_reference.name} and {file_shift.name}...")
+    
+    # Open readers
+    f_ref = pyedflib.EdfReader(str(file_reference))
+    f_shift = pyedflib.EdfReader(str(file_shift))
+    
+    # Get headers
+    ref_signal_headers = f_ref.getSignalHeaders()
+    shift_signal_headers = f_shift.getSignalHeaders()
+    
+    ref_header = f_ref.getHeader()
+    shift_header = f_shift.getHeader()
+    
+    # Get file durations
+    ref_dur = f_ref.getFileDuration()
+    shift_dur = f_shift.getFileDuration()
+    
+    # Determine crop times (in seconds)
+    if offset > 0:
+        start_ref_sec = offset
+        start_shift_sec = 0
+    else:
+        start_ref_sec = 0
+        start_shift_sec = abs(offset)
         
-    return offset
+    print(f"[Cutter] Aligning starts: Cut {start_ref_sec:.3f}s from Ref, {start_shift_sec:.3f}s from Shift")
+    
+    # Calculate common duration
+    rem_ref = ref_dur - start_ref_sec
+    rem_shift = shift_dur - start_shift_sec
+    common_dur = min(rem_ref, rem_shift)
+    
+    print(f"[Cutter] Common duration: {common_dur:.3f}s")
+    
+    # Helper to process and write file
+    def process_file(reader, writer_path, start_sec, duration_sec, signal_headers, main_header):
+        n_channels = reader.signals_in_file
+        
+        # Create writer
+        writer = pyedflib.EdfWriter(str(writer_path), n_channels=n_channels)
+        
+        # Set Main Header
+        writer.setHeader(main_header)
+        
+        # Set Signal Headers
+        for header in signal_headers:
+            if 'sample_rate' in header:
+                if 'sample_frequency' not in header:
+                    header['sample_frequency'] = header['sample_rate']
+                del header['sample_rate']
+        
+        writer.setSignalHeaders(signal_headers)
+        
+        # Read, Crop, Write Signals
+        data_list = []
+        for i in range(n_channels):
+            fs_ch = signal_headers[i]['sample_frequency']
+            
+            start_idx = int(start_sec * fs_ch)
+            end_idx = start_idx + int(duration_sec * fs_ch)
+            
+            sig = reader.readSignal(i)
+            sig_cropped = sig[start_idx:end_idx]
+            data_list.append(sig_cropped)
+            
+        writer.writeSamples(data_list)
+        writer.close()
+        return data_list
+        
+    # Output paths
+    fname_ref = f"{file_reference.stem}_synced.edf"
+    fname_shift = f"{file_shift.stem}_synced.edf"
+    
+    if prefix:
+        fname_ref = f"{prefix}-{fname_ref}"
+        fname_shift = f"{prefix}-{fname_shift}"
+        
+    out_name_ref = out_dir / fname_ref
+    out_name_shift = out_dir / fname_shift
+    
+    print(f"[Cutter] Saving to {out_name_ref}...")
+    ref_data = process_file(f_ref, out_name_ref, start_ref_sec, common_dur, ref_signal_headers, ref_header)
+    
+    print(f"[Cutter] Saving to {out_name_shift}...")
+    shift_data = process_file(f_shift, out_name_shift, start_shift_sec, common_dur, shift_signal_headers, shift_header)
+    
+    # Close readers
+    f_ref._close()
+    f_shift._close()
+    
+    # 5. Generate combined plot if requested
+    if plot:
+        print("[Plotting] Generating complete alignment plot...")
+        EPSILON = 1e-12
+        
+        # Get cut signals (first channel)
+        sig_ref_cut = ref_data[0]
+        sig_shift_cut = shift_data[0]
+        
+        sig_ref_cut = (sig_ref_cut - np.mean(sig_ref_cut)) / (np.std(sig_ref_cut) + EPSILON)
+        sig_shift_cut = (sig_shift_cut - np.mean(sig_shift_cut)) / (np.std(sig_shift_cut) + EPSILON)
+        
+        fs_ref = ref_signal_headers[0].get('sample_frequency', ref_signal_headers[0].get('sample_rate'))
+        fs_shift = shift_signal_headers[0].get('sample_frequency', shift_signal_headers[0].get('sample_rate'))
+        
+        fname = f"alignment_complete_{file_reference.stem}_vs_{file_shift.stem}.png"
+        if prefix:
+            fname = f"{prefix}-{fname}"
+        save_path = out_dir / fname
+        
+        plot_complete_alignment(
+            sRef_raw=sRef,
+            sShift_raw=sShift,
+            sRef_cut=sig_ref_cut,
+            sShift_cut=sig_shift_cut,
+            fs_ref=fs_ref,
+            fs_shift=fs_shift,
+            offset_sec=offset,
+            name_ref=file_reference.name,
+            name_shift=file_shift.name,
+            coarse_corr=coarse_corr,
+            coarse_lags=coarse_lags,
+            plot_win_sec=PLOT_WIN_SEC,
+            plot_overlap_divisor=PLOT_OVERLAP_DIVISOR,
+            plot_max_freq=PLOT_MAX_FREQ,
+            save_path=str(save_path),
+            show_plot=False
+        )
+        
+    print("[Cutter] Done.")
+    return out_name_ref, out_name_shift

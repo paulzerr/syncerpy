@@ -1,11 +1,13 @@
 import numpy as np
 from pathlib import Path
 import pyedflib
-from syncerpy.plotting import plot_results, plot_spectrograms, plot_combined_spectrograms
+from syncerpy.plotting import plot_complete_alignment
 import datetime
 from syncerpy.syncerpy import load_file
 
-def cut(file_reference, file_shift, offset, output_folder=None, plot=False, show_plot=True, save_plot=False, prefix=None):
+def cut(file_reference, file_shift, offset, sRef_raw=None, sShift_raw=None,
+        coarse_corr=None, coarse_lags=None, output_folder=None,
+        plot=False, show_plot=True, save_plot=False, prefix=None):
     """
     Aligns two EDF files based on the provided offset using pyedflib to preserve exact headers.
     
@@ -132,7 +134,7 @@ def cut(file_reference, file_shift, offset, output_folder=None, plot=False, show
     f_shift._close()
     
     if save_plot or (plot and show_plot):
-        print("[Cutter] Generating combined plot...")
+        print("[Cutter] Generating complete alignment plot...")
         # Use first channel for plotting
         # Normalize
         EPSILON = 1e-12
@@ -147,44 +149,36 @@ def cut(file_reference, file_shift, offset, output_folder=None, plot=False, show
         fs_ref = ref_signal_headers[0].get('sample_frequency', ref_signal_headers[0].get('sample_rate'))
         fs_shift = shift_signal_headers[0].get('sample_frequency', shift_signal_headers[0].get('sample_rate'))
         
-        # Load raw signals for the top part of the plot
-        # We need to reload them or pass them in. Reloading is safer/easier here to avoid passing huge arrays around if not needed.
-        # We'll use the same channel index 0.
-        # Note: load_file does z-score normalization already.
-        
-        # We need to know the channel name for load_file if we want to be specific, but load_file takes a path.
-        # However, load_file in syncerpy.py uses mne which might be slow.
-        # Let's use pyedflib here since we have the reader logic, but readers are closed.
-        # Re-opening for just one channel is fine.
-        
-        def load_raw_channel_0(path):
-            with pyedflib.EdfReader(str(path)) as f:
-                sig = f.readSignal(0)
-                sig = (sig - np.mean(sig)) / (np.std(sig) + EPSILON)
-                return sig
-                
-        sig_ref_raw = load_raw_channel_0(ref_path)
-        sig_shift_raw = load_raw_channel_0(shift_path)
+        # If raw signals weren't passed, load them
+        if sRef_raw is None or sShift_raw is None:
+            def load_raw_channel_0(path):
+                with pyedflib.EdfReader(str(path)) as f:
+                    sig = f.readSignal(0)
+                    sig = (sig - np.mean(sig)) / (np.std(sig) + EPSILON)
+                    return sig
+                    
+            sRef_raw = load_raw_channel_0(ref_path)
+            sShift_raw = load_raw_channel_0(shift_path)
         
         save_path = None
         if save_plot:
-            fname = f"spectrograms_combined_{ref_path.stem}_vs_{shift_path.stem}.png"
+            fname = f"alignment_complete_{ref_path.stem}_vs_{shift_path.stem}.png"
             if prefix:
                 fname = f"{prefix}-{fname}"
             save_path = out_dir / fname
         
-        plot_combined_spectrograms(
-            sRef_raw=sig_ref_raw,
-            sShift_raw=sig_shift_raw,
+        plot_complete_alignment(
+            sRef_raw=sRef_raw,
+            sShift_raw=sShift_raw,
             sRef_cut=sig_ref_cut,
             sShift_cut=sig_shift_cut,
-            fs_ref_raw=fs_ref,
-            fs_shift_raw=fs_shift,
-            fs_ref_cut=fs_ref,
-            fs_shift_cut=fs_shift,
+            fs_ref=fs_ref,
+            fs_shift=fs_shift,
+            offset_sec=offset,
             name_ref=ref_path.name,
             name_shift=shift_path.name,
-            title="Spectrograms: Raw (Top) vs Aligned (Bottom)",
+            coarse_corr=coarse_corr,
+            coarse_lags=coarse_lags,
             save_path=str(save_path) if save_path else None,
             show_plot=show_plot
         )
