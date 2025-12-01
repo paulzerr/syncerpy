@@ -74,7 +74,7 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
     vmin_Sc, vmax_Sc = get_robust_lims(SS_cut)
 
     # Create figure with 2 columns, 3 rows
-    fig = plt.figure(figsize=(20, 16))
+    fig = plt.figure(figsize=(24, 13.5))  # 16:9 aspect ratio
     
     # Format offset string
     if abs(offset_sec) >= 3600:
@@ -181,17 +181,19 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
         else:
             peak_ratio = np.inf
         
-        # Mark max with arrow from bottom and red dot
+        # Mark max with small arrow at bottom and red dot at peak
         ylim = ax_coarse.get_ylim()
         if ylim[0] == ylim[1]:
             ylim = (coarse_corr.min(), coarse_corr.max())
-        ax_coarse.annotate('', xy=(max_lag, max_val), xytext=(max_lag, ylim[0]),
+        arrow_height = (ylim[1] - ylim[0]) * 0.15  # Small arrow at bottom
+        ax_coarse.annotate('', xy=(max_lag, ylim[0] + arrow_height), xytext=(max_lag, ylim[0]),
                           arrowprops=dict(arrowstyle='-|>', color='red', lw=2))
         ax_coarse.plot(max_lag, max_val, marker='o', color='red', markersize=8, zorder=5)
         
-        # Show ratio in large font
+        # Show ratio and offset in large font
         ratio_text = f"Peak ratio: {peak_ratio:.2f}" if peak_ratio < 100 else "Peak ratio: >100"
-        ax_coarse.text(0.98, 0.95, ratio_text, transform=ax_coarse.transAxes,
+        offset_text = f"Offset: {max_lag:.1f}s"
+        ax_coarse.text(0.98, 0.95, f"{ratio_text}\n{offset_text}", transform=ax_coarse.transAxes,
                       fontsize=RATIO_FONT_SIZE, ha='right', va='top', fontweight='bold',
                       bbox=dict(boxstyle='round', facecolor='white', edgecolor='gray', alpha=0.8))
         
@@ -236,14 +238,18 @@ def plot_complete_alignment(sRef_raw, sShift_raw, sRef_cut, sShift_cut,
                     else:
                         peak_ratio = np.inf
                     
-                    # Mark with arrow from bottom and red dot
-                    ax_fine.annotate('', xy=(best_lag_ms, best_val), xytext=(best_lag_ms, scores_arr.min()),
+                    # Mark with small arrow at bottom and red dot at peak
+                    ylim_fine = (scores_arr.min(), scores_arr.max())
+                    arrow_height_fine = (ylim_fine[1] - ylim_fine[0]) * 0.15
+                    ax_fine.annotate('', xy=(best_lag_ms, ylim_fine[0] + arrow_height_fine),
+                                    xytext=(best_lag_ms, ylim_fine[0]),
                                     arrowprops=dict(arrowstyle='-|>', color='red', lw=2))
                     ax_fine.plot(best_lag_ms, best_val, marker='o', color='red', markersize=8, zorder=5)
                     
-                    # Show ratio in large font
+                    # Show ratio and offset in large font
                     ratio_text = f"Peak ratio: {peak_ratio:.2f}" if peak_ratio < 100 else "Peak ratio: >100"
-                    ax_fine.text(0.98, 0.95, ratio_text, transform=ax_fine.transAxes,
+                    offset_text = f"Offset: {best_lag_ms:.1f}ms"
+                    ax_fine.text(0.98, 0.95, f"{ratio_text}\n{offset_text}", transform=ax_fine.transAxes,
                                 fontsize=RATIO_FONT_SIZE, ha='right', va='top', fontweight='bold',
                                 bbox=dict(boxstyle='round', facecolor='white', edgecolor='gray', alpha=0.8))
             
