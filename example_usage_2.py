@@ -17,9 +17,9 @@ DATASETS = {
         "channel_shift": "PSG_F3",
     },
     "sleepprofiler": {
-        "root_dir": "/project/4180000.46/extra_zmax_data/sleepprofiler/",
-        "output_dir": "/project/4180000.46/extra_zmax_data/aligned_sleepprofiler/",
-        "channel_ref": "Fp1",  # Update with correct channel names
+        "root_dir": "/project/4180000.46/extra_zmax_data/sleepprofiler_dataset/",
+        "output_dir": "/project/4180000.46/extra_zmax_data/sleepprofiler_aligned/",
+        "channel_ref": "F3",  # Update with correct channel names
         "channel_shift": "EEG",  # Update with correct channel names
     },
 }
